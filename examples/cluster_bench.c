@@ -198,9 +198,9 @@ int main(int argc, char *argv[])
     size_t N = (argc > 3) ? (size_t)atoi(argv[3]) : 256;
     int iterations = 3;
 
-    printf("╔══════════════════════════════════════════════════════════════╗\n");
-    printf("║        Cluster Matrix Multiplication Benchmark               ║\n");
-    printf("╚══════════════════════════════════════════════════════════════╝\n\n");
+    printf("+==============================================================+\n");
+    printf("|        Cluster Matrix Multiplication Benchmark               |\n");
+    printf("+==============================================================+\n\n");
 
     printf("Configuration:\n");
     printf("  Server: %s:%u\n", host, port);
@@ -244,20 +244,20 @@ int main(int argc, char *argv[])
 
     uint64_t dsm_us = bench_distributed_matmul(ctx, N, iterations);
 
-    printf("\n┌────────────────────────────────────────────────────────────────┐\n");
-    printf("│                         Results                                │\n");
-    printf("├────────────────────────────────────────────────────────────────┤\n");
-    printf("│  Raw Memory:     %10lu us                                 │\n", raw_us);
-    printf("│  DSM Cluster:    %10lu us                                 │\n", dsm_us);
-    printf("│  Overhead:       %10.2fx                                   │\n", (double)dsm_us / raw_us);
-    printf("├────────────────────────────────────────────────────────────────┤\n");
-    printf("│  DSM Stats:                                                    │\n");
-    printf("│    Local hits:   %10lu                                     │\n", ctx->local_hits);
-    printf("│    Remote fetch: %10lu                                     │\n", ctx->remote_fetches);
-    printf("│    Evictions:    %10lu                                     │\n", ctx->evictions);
-    printf("│    Hit rate:     %10.1f%%                                    │\n",
+    printf("\n+----------------------------------------------------------------+\n");
+    printf("|                         Results                                |\n");
+    printf("+----------------------------------------------------------------+\n");
+    printf("|  Raw Memory:     %10lu us                                 |\n", raw_us);
+    printf("|  DSM Cluster:    %10lu us                                 |\n", dsm_us);
+    printf("|  Overhead:       %10.2fx                                   |\n", (double)dsm_us / raw_us);
+    printf("+----------------------------------------------------------------+\n");
+    printf("|  DSM Stats:                                                    |\n");
+    printf("|    Local hits:   %10lu                                     |\n", ctx->local_hits);
+    printf("|    Remote fetch: %10lu                                     |\n", ctx->remote_fetches);
+    printf("|    Evictions:    %10lu                                     |\n", ctx->evictions);
+    printf("|    Hit rate:     %10.1f%%                                    |\n",
            100.0 * ctx->local_hits / (ctx->local_hits + ctx->remote_fetches + 1));
-    printf("└────────────────────────────────────────────────────────────────┘\n");
+    printf("+----------------------------------------------------------------+\n");
 
     close(ctx->sock_fd);
     dsm_destroy_context(ctx);

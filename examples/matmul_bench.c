@@ -376,18 +376,18 @@ int main(int argc, char *argv[])
     if (argc > 2) port = atoi(argv[2]);
     if (argc > 3 && strcmp(argv[3], "--local") == 0) use_server = 0;
     
-    printf("╔══════════════════════════════════════════════════════════════╗\n");
-    printf("║     Matrix Multiplication Benchmark: DSM vs Raw Memory       ║\n");
-    printf("╚══════════════════════════════════════════════════════════════╝\n\n");
+    printf("+==================================================================+\n");
+    printf("|     Matrix Multiplication Benchmark: DSM vs Raw Memory        |\n");
+    printf("+==================================================================+\n\n");
 
     size_t sizes[] = {16, 32, 64, 128};
     int num_sizes = sizeof(sizes) / sizeof(sizes[0]);
     int iterations = 3;
 
-    printf("┌────────┬─────────────────┬─────────────────┬─────────────────┬──────────┬──────────┐\n");
-    printf("│  Size  │   Raw Memory    │  DSM Per-Elem   │  DSM Prefetch   │ Per-Elem │ Prefetch │\n");
-    printf("│  NxN   │  (cycles)       │  (page lookup)  │  (raw ptrs)     │ Overhead │ Overhead │\n");
-    printf("├────────┼─────────────────┼─────────────────┼─────────────────┼──────────┼──────────┤\n");
+    printf("+--------+-----------------+-----------------+-----------------+----------+----------+\n");
+    printf("|  Size  |   Raw Memory    |  DSM Per-Elem   |  DSM Prefetch   | Per-Elem | Prefetch |\n");
+    printf("|  NxN   |  (cycles)       |  (page lookup)  |  (raw ptrs)     | Overhead | Overhead |\n");
+    printf("+--------+-----------------+-----------------+-----------------+----------+----------+\n");
 
     dsm_context_t *ctx = NULL;
 
@@ -426,11 +426,11 @@ int main(int argc, char *argv[])
         double prefetch_overhead = (ctx && raw_cycles > 0) ?
                           (double)dsm_prefetch_cycles / raw_cycles : 0.0;
 
-        printf("│ %3zux%-3zu │ %15lu │ %15lu │ %15lu │  %6.1fx │  %6.2fx │\n",
+        printf("| %3zux%-3zu | %15lu | %15lu | %15lu |  %6.1fx |  %6.2fx |\n",
                N, N, raw_cycles, dsm_perelem_cycles, dsm_prefetch_cycles, perelem_overhead, prefetch_overhead);
     }
 
-    printf("└────────┴─────────────────┴─────────────────┴─────────────────┴──────────┴──────────┘\n");
+    printf("+--------+-----------------+-----------------+-----------------+----------+----------+\n");
 
     if (ctx) {
         printf("\nFinal stats: hits=%lu fetches=%lu evictions=%lu\n",
