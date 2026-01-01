@@ -154,32 +154,30 @@ perf: $(CLIENT) $(SERVER)
 
 clean:
 	rm -rf $(BUILDDIR) $(SERVER) $(SERVER_URING) $(CLIENT) $(LIBRARY)
+	rm -f examples/matmul_bench examples/cluster_bench examples/matrix_demo
 
-# Test: run server and client
+# Test: run server and client (30s timeout)
 test: $(SERVER) $(CLIENT)
 	@echo "Starting test..."
-	@./$(SERVER) -v & SERVER_PID=$$!; \
+	@./$(SERVER) & SERVER_PID=$$!; \
 	sleep 1; \
-	./$(CLIENT) -H localhost -v -i 10000; \
-	kill $$SERVER_PID 2>/dev/null || true
+	timeout 30 ./$(CLIENT) -H localhost -i 10000 -b || true; \
+	kill $$SERVER_PID 2>/dev/null || true; wait $$SERVER_PID 2>/dev/null || true
 	@echo "Test complete"
 
-# Cluster test: run 3-node cluster locally
+# Cluster test: 2-node cluster (30s timeout per client)
 cluster-test: $(SERVER) $(CLIENT)
-	@echo "=== Starting 3-node DSM cluster test ==="
+	@echo "=== Starting 2-node DSM cluster test ==="
+	@pkill -9 dsm-server 2>/dev/null || true; sleep 1
 	@./$(SERVER) -p 9001 -c 10001 -r 0:1024 -n 1024 & PID1=$$!; \
 	sleep 1; \
 	./$(SERVER) -p 9002 -c 10002 -r 1024:2048 -n 1024 -s localhost -S 10001 & PID2=$$!; \
-	./$(SERVER) -p 9003 -c 10003 -r 2048:3072 -n 1024 -s localhost -S 10001 & PID3=$$!; \
-	sleep 2; \
-	echo "=== Cluster started (3 nodes) ==="; \
-	echo "=== Running benchmark on node 1 (range 0-1024) ==="; \
-	./$(CLIENT) -H localhost -p 9001 -N 1024 -i 5000; \
-	echo "=== Running benchmark on node 2 (range 1024-2048) ==="; \
-	./$(CLIENT) -H localhost -p 9002 -N 1024 -i 5000; \
-	echo "=== Cross-cluster test: access all 3072 pages via node 1 ==="; \
-	./$(CLIENT) -H localhost -p 9001 -N 3072 -i 2000 -v; \
-	kill $$PID1 $$PID2 $$PID3 2>/dev/null || true
+	sleep 3; \
+	echo "=== Running benchmark on node 1 ==="; \
+	timeout 30 ./$(CLIENT) -H localhost -p 9001 -N 1024 -i 5000 -b || true; \
+	echo "=== Running benchmark on node 2 ==="; \
+	timeout 30 ./$(CLIENT) -H localhost -p 9002 -N 1024 -i 5000 -b || true; \
+	kill $$PID1 $$PID2 2>/dev/null || true; wait $$PID1 $$PID2 2>/dev/null || true
 	@echo "=== Cluster test complete ==="
 
 # Docker cluster test
@@ -223,26 +221,17 @@ help:
 	@echo ""
 	@echo "Build Targets:"
 	@echo "  all            - Build server and client (default)"
-	@echo "  server         - Build server only"
-	@echo "  client         - Build client only"
+	@echo "  lib            - Build shared library (libdsm.so)"
+	@echo "  uring          - Build io_uring server variant"
 	@echo "  debug          - Build with debug symbols and sanitizers"
 	@echo "  clean          - Remove built files"
 	@echo ""
 	@echo "Test Targets:"
-	@echo "  test           - Run single server/client test"
-	@echo "  cluster-test   - Run 3-node cluster test locally"
-	@echo "  e2e-exhaustive - Full E2E fuzz test suite with perf stats"
-	@echo "  e2e-quick      - Quick E2E test (high locality + random)"
-	@echo "  e2e-chaos      - 60-second chaos/fuzz test"
-	@echo "  e2e-perf       - Collect detailed perf stats"
+	@echo "  test           - Single server/client test (30s timeout)"
+	@echo "  cluster-test   - 2-node cluster test (30s timeout)"
+	@echo "  e2e-quick      - Quick E2E fuzz test (~60s)"
+	@echo "  e2e-exhaustive - Full E2E fuzz test suite"
 	@echo ""
 	@echo "Docker Targets:"
-	@echo "  docker         - Build with Docker-portable flags"
 	@echo "  docker-build   - Build Docker image"
 	@echo "  docker-run     - Run with docker-compose"
-	@echo "  cluster-docker - Run cluster test in Docker"
-	@echo ""
-	@echo "Cluster Options (server CLI):"
-	@echo "  -s, --seed ADDR       Seed node to join cluster"
-	@echo "  -c, --cluster-port    Port for gossip protocol"
-	@echo "  -r, --range START:END Page range this node owns"

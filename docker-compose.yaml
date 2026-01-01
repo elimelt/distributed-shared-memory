@@ -1,0 +1,112 @@
+version: '3.8'
+
+services:
+  # Cluster node 1 - pages 0-1023
+  node1:
+    build: .
+    image: dsm:latest
+    container_name: dsm-node1
+    environment:
+      - DSM_PORT=9999
+      - DSM_CLUSTER_PORT=10999
+      - DSM_PAGE_RANGE_START=0
+      - DSM_PAGE_RANGE_END=1024
+      - DSM_NUM_VIRTUAL_PAGES=1024
+      - DSM_VERBOSE=1
+    ports:
+      - "9001:9999"
+      - "10001:10999/udp"
+    networks:
+      - dsm-net
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 256M
+
+  # Cluster node 2 - pages 1024-2047
+  node2:
+    image: dsm:latest
+    container_name: dsm-node2
+    environment:
+      - DSM_PORT=9999
+      - DSM_CLUSTER_PORT=10999
+      - DSM_PAGE_RANGE_START=1024
+      - DSM_PAGE_RANGE_END=2048
+      - DSM_NUM_VIRTUAL_PAGES=1024
+      - DSM_SEED_ADDR=node1
+      - DSM_SEED_PORT=10999
+      - DSM_VERBOSE=1
+    depends_on:
+      - node1
+    ports:
+      - "9002:9999"
+      - "10002:10999/udp"
+    networks:
+      - dsm-net
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 256M
+
+  # Cluster node 3 - pages 2048-3071
+  node3:
+    image: dsm:latest
+    container_name: dsm-node3
+    environment:
+      - DSM_PORT=9999
+      - DSM_CLUSTER_PORT=10999
+      - DSM_PAGE_RANGE_START=2048
+      - DSM_PAGE_RANGE_END=3072
+      - DSM_NUM_VIRTUAL_PAGES=1024
+      - DSM_SEED_ADDR=node1
+      - DSM_SEED_PORT=10999
+      - DSM_VERBOSE=1
+    depends_on:
+      - node1
+    ports:
+      - "9003:9999"
+      - "10003:10999/udp"
+    networks:
+      - dsm-net
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 256M
+
+  # Client for benchmarking the cluster
+  client:
+    image: dsm:latest
+    container_name: dsm-client
+    entrypoint: ["/usr/local/bin/dsm-client"]
+    command: ["-H", "node1", "-p", "9999", "-N", "3072", "-v"]
+    environment:
+      - DSM_NUM_PAGES=256
+      - DSM_NUM_ITERATIONS=50000
+      - DSM_LOCALITY_PERCENT=80
+      - DSM_WRITE_PERCENT=10
+      - DSM_VERBOSE=1
+      - DSM_BENCHMARK=1
+    depends_on:
+      - node1
+      - node2
+      - node3
+    networks:
+      - dsm-net
+    restart: "no"
+    profiles:
+      - benchmark
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 512M
+
+networks:
+  dsm-net:
+    driver: bridge
