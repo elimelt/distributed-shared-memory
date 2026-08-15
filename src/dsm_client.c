@@ -28,6 +28,7 @@ static void print_usage(const char *prog)
     fprintf(stderr, "  -w, --write-pct <pct>     Write percentage 0-100 (default: 10)\n");
     fprintf(stderr, "  -v, --verbose             Enable verbose output\n");
     fprintf(stderr, "  -b, --benchmark           Enable benchmark mode\n");
+    fprintf(stderr, "  -t, --verify              Verify end-to-end round-trip and exit\n");
     fprintf(stderr, "  -h, --help                Show this help message\n");
     fprintf(stderr, "\nEnvironment variables:\n");
     fprintf(stderr, "  DSM_HOST              Server hostname\n");
@@ -39,6 +40,7 @@ static void print_usage(const char *prog)
     fprintf(stderr, "  DSM_WRITE_PERCENT     Write percentage\n");
     fprintf(stderr, "  DSM_VERBOSE           Enable verbose (set to 1)\n");
     fprintf(stderr, "  DSM_BENCHMARK         Enable benchmark mode (set to 1)\n");
+    fprintf(stderr, "  DSM_VERIFY            Enable verify mode (set to 1)\n");
 }
 
 static int connect_to_server(const char *host, uint16_t port, int max_retries)
@@ -153,6 +155,41 @@ static void run_benchmark(dsm_context_t *ctx, const dsm_client_config_t *cfg)
     printf("Hit rate:        %.2f%%\n", hit_rate);
 }
 
+static int run_verify(dsm_context_t *ctx, const dsm_client_config_t *cfg)
+{
+    uint8_t expected[PAGE_SIZE];
+
+    /* Pass 1: fill every virtual page with a page-dependent pattern.
+     * num_virtual_pages > num_pages forces eviction and writeback. */
+    for (uint32_t p = 0; p < cfg->num_virtual_pages; p++) {
+        uint8_t *ptr = dsm_access_page(ctx, (uint16_t)p, 1);
+        if (!ptr) {
+            fprintf(stderr, "VERIFY FAILED: cannot access page %u for write\n", p);
+            return 1;
+        }
+        for (uint32_t i = 0; i < PAGE_SIZE; i++)
+            ptr[i] = (uint8_t)((p * 2654435761u + i) & 0xFF);
+    }
+
+    /* Pass 2: re-read every page and compare against the pattern. */
+    for (uint32_t p = 0; p < cfg->num_virtual_pages; p++) {
+        uint8_t *ptr = dsm_access_page(ctx, (uint16_t)p, 0);
+        if (!ptr) {
+            fprintf(stderr, "VERIFY FAILED: cannot access page %u for read\n", p);
+            return 1;
+        }
+        for (uint32_t i = 0; i < PAGE_SIZE; i++)
+            expected[i] = (uint8_t)((p * 2654435761u + i) & 0xFF);
+        if (memcmp(ptr, expected, PAGE_SIZE) != 0) {
+            fprintf(stderr, "VERIFY FAILED: page %u contents mismatch\n", p);
+            return 1;
+        }
+    }
+
+    printf("VERIFY OK %u pages\n", cfg->num_virtual_pages);
+    return 0;
+}
+
 static void interactive_mode(dsm_context_t *ctx)
 {
     char line[256];
@@ -216,6 +253,7 @@ static struct option long_options[] = {
     {"write-pct",   required_argument, 0, 'w'},
     {"verbose",     no_argument,       0, 'v'},
     {"benchmark",   no_argument,       0, 'b'},
+    {"verify",      no_argument,       0, 't'},
     {"help",        no_argument,       0, 'h'},
     {0, 0, 0, 0}
 };
@@ -226,7 +264,7 @@ int main(int argc, char **argv)
     dsm_client_config_from_env(&cfg);
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "H:p:n:N:i:l:w:vbh", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "H:p:n:N:i:l:w:vbth", long_options, NULL)) != -1) {
         switch (opt) {
         case 'H':
             cfg.host = optarg;
@@ -255,6 +293,9 @@ int main(int argc, char **argv)
         case 'b':
             cfg.benchmark_mode = true;
             break;
+        case 't':
+            cfg.verify_mode = true;
+            break;
         case 'h':
             print_usage(argv[0]);
             return 0;
@@ -262,6 +303,12 @@ int main(int argc, char **argv)
             print_usage(argv[0]);
             return 1;
         }
+    }
+
+    if (cfg.verify_mode) {
+        /* Force a virtual range 4x the local cache so verification
+         * exercises eviction, writeback, and refetch. */
+        cfg.num_virtual_pages = (uint16_t)(4u * cfg.num_pages);
     }
 
     if (cfg.locality_percent > 100) {
@@ -303,7 +350,10 @@ int main(int argc, char **argv)
     }
     ctx->sock_fd = sock_fd;
 
-    if (cfg.benchmark_mode) {
+    int exit_code = 0;
+    if (cfg.verify_mode) {
+        exit_code = run_verify(ctx, &cfg);
+    } else if (cfg.benchmark_mode) {
         run_benchmark(ctx, &cfg);
     } else {
         interactive_mode(ctx);
@@ -319,5 +369,5 @@ int main(int argc, char **argv)
     close(sock_fd);
     dsm_destroy_context(ctx);
 
-    return 0;
+    return exit_code;
 }

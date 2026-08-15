@@ -160,13 +160,15 @@ clean:
 	rm -rf $(BUILDDIR) $(SERVER) $(SERVER_URING) $(CLIENT) $(LIBRARY)
 	rm -f examples/matmul_bench examples/cluster_bench examples/matrix_demo
 
-# Test: run server and client (30s timeout)
+# Test: end-to-end verify (write, evict, writeback, refetch), then unit tests
 test: $(SERVER) $(CLIENT)
-	@echo "Starting test..."
-	@./$(SERVER) & SERVER_PID=$$!; \
+	@echo "Starting verify test..."
+	@./$(SERVER) -n 1024 & SERVER_PID=$$!; \
 	sleep 1; \
-	timeout 30 ./$(CLIENT) -H localhost -i 10000 -b || true; \
-	kill $$SERVER_PID 2>/dev/null || true; wait $$SERVER_PID 2>/dev/null || true
+	timeout 60 ./$(CLIENT) -H localhost --verify; RC=$$?; \
+	kill $$SERVER_PID 2>/dev/null || true; wait $$SERVER_PID 2>/dev/null || true; \
+	exit $$RC
+	@$(MAKE) unit
 	@echo "Test complete"
 
 # Unit tests: pager tests (in-memory mode, no server needed)

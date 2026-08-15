@@ -14,6 +14,7 @@ typedef struct {
     uint8_t write_percent;
     bool verbose;
     bool benchmark_mode;
+    bool verify_mode;
 } dsm_client_config_t;
 
 typedef struct {

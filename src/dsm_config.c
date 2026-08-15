@@ -16,7 +16,8 @@ dsm_client_config_t dsm_client_config_default(void)
         .locality_percent = 80,
         .write_percent = 10,
         .verbose = false,
-        .benchmark_mode = true
+        .benchmark_mode = true,
+        .verify_mode = false
     };
     return cfg;
 }
@@ -85,6 +86,11 @@ int dsm_client_config_from_env(dsm_client_config_t *cfg)
         cfg->benchmark_mode = true;
     }
 
+    val = getenv("DSM_VERIFY");
+    if (val && strcmp(val, "1") == 0) {
+        cfg->verify_mode = true;
+    }
+
     return 0;
 }
 
@@ -135,6 +141,7 @@ void dsm_client_config_print(const dsm_client_config_t *cfg)
     printf("  Write Percent:     %u%%\n", cfg->write_percent);
     printf("  Verbose:           %s\n", cfg->verbose ? "true" : "false");
     printf("  Benchmark Mode:    %s\n", cfg->benchmark_mode ? "true" : "false");
+    printf("  Verify Mode:       %s\n", cfg->verify_mode ? "true" : "false");
 }
 
 void dsm_server_config_print(const dsm_server_config_t *cfg)
