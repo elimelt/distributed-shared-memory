@@ -45,7 +45,9 @@ typedef struct {
     uint64_t evictions;
 } dsm_context_t;
 
-void dsm_init_paging_system(dsm_context_t *ctx);
+void dsm_context_set_socket(dsm_context_t *ctx, int fd);
+void dsm_context_get_stats(const dsm_context_t *ctx, uint64_t *hits,
+                           uint64_t *fetches, uint64_t *evictions);
 void *dsm_access_page(dsm_context_t *ctx, uint32_t page_id, int write);
 void *dsm_access_page_slow(dsm_context_t *ctx, uint32_t page_id, int write,
                            page_table_entry_t *entry);

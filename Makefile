@@ -35,7 +35,7 @@ LIBRARY  := libdsm.so
 # Docker-friendly flags (no -march=native for portability)
 DOCKER_CFLAGS := -O3 -flto -fomit-frame-pointer -Wall -Wextra -std=gnu11 -Iinclude
 
-.PHONY: all clean perf debug docker-build docker-run test unit cluster-test install help server client lib python
+.PHONY: all clean perf debug docker-build docker-run test unit cluster-test install help server client lib python python-test
 
 all: $(SERVER) $(CLIENT)
 
@@ -146,6 +146,15 @@ $(GOSSIP_TEST_BIN): $(GOSSIP_TEST_SRC) $(BUILDDIR)/dsm_gossip.o $(INCDIR)/dsm_go
 unit: $(TEST_BIN) $(GOSSIP_TEST_BIN)
 	@./$(TEST_BIN)
 	@./$(GOSSIP_TEST_BIN)
+
+# Python binding end-to-end test (needs python3 and a free port 9999)
+python-test: $(SERVER) $(LIBRARY)
+	@echo "Starting Python e2e test..."
+	@./$(SERVER) -n 4096 & SERVER_PID=$$!; \
+	sleep 1; \
+	python3 tests/python_e2e.py; RC=$$?; \
+	kill $$SERVER_PID 2>/dev/null || true; wait $$SERVER_PID 2>/dev/null || true; \
+	exit $$RC
 
 # Cluster test: 2-node cluster (30s timeout per client)
 cluster-test: $(SERVER) $(CLIENT)

@@ -67,21 +67,20 @@ static uint32_t evict_page(dsm_context_t *ctx)
     }
 }
 
-void dsm_init_paging_system(dsm_context_t *ctx)
+void dsm_context_set_socket(dsm_context_t *ctx, int fd)
 {
-    memset(ctx->page_table, 0, ctx->num_virtual_pages * sizeof(page_table_entry_t));
-    memset(ctx->frame_table, 0, ctx->num_pages * sizeof(frame_entry_t));
+    ctx->sock_fd = fd;
+}
 
-    for (uint32_t i = 0; i < ctx->num_pages; i++)
-        ctx->free_list[i] = ctx->num_pages - 1 - i;
-    ctx->free_list_top = ctx->num_pages;
-
-    ctx->clock_hand = 0;
-    ctx->last_page_id = DSM_NO_PAGE;
-    ctx->prefetch_count = 4;
-    ctx->local_hits = 0;
-    ctx->remote_fetches = 0;
-    ctx->evictions = 0;
+void dsm_context_get_stats(const dsm_context_t *ctx, uint64_t *hits,
+                           uint64_t *fetches, uint64_t *evictions)
+{
+    if (hits)
+        *hits = ctx->local_hits;
+    if (fetches)
+        *fetches = ctx->remote_fetches;
+    if (evictions)
+        *evictions = ctx->evictions;
 }
 
 void dsm_prefetch_pages(dsm_context_t *ctx, uint32_t start_page, uint8_t count)

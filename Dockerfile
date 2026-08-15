@@ -1,6 +1,12 @@
 # Multi-stage build for minimal image size
 FROM gcc:13-bookworm AS builder
 
+# python3 is needed for the Python binding e2e test (make python-test)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /build
 
 # Copy source files
