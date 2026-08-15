@@ -121,7 +121,6 @@ perf: $(CLIENT) $(SERVER)
 
 clean:
 	rm -rf $(BUILDDIR) $(SERVER) $(CLIENT) $(LIBRARY)
-	rm -f examples/matmul_bench examples/cluster_bench
 
 # Test: end-to-end verify (write, evict, writeback, refetch), then unit tests
 test: $(SERVER) $(CLIENT)

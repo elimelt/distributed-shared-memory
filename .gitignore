@@ -9,11 +9,6 @@ dsm-server
 dsm-client
 dsm
 
-# Example executables
-examples/matmul_bench
-examples/cluster_bench
-examples/matrix_demo
-
 # Profiling output
 *.out
 perf.data
