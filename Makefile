@@ -17,10 +17,6 @@ BUILDDIR := build
 COMMON_SRC := $(SRCDIR)/dsm_common.c $(SRCDIR)/dsm_config.c $(SRCDIR)/dsm_paging.c
 COMMON_OBJ := $(BUILDDIR)/dsm_common.o $(BUILDDIR)/dsm_config.o $(BUILDDIR)/dsm_paging.o
 
-# High-level API sources (region + array)
-API_SRC := $(SRCDIR)/dsm_region.c $(SRCDIR)/dsm_array.c
-API_OBJ := $(BUILDDIR)/dsm_region.o $(BUILDDIR)/dsm_array.o
-
 # Cluster sources (server only)
 CLUSTER_SRC := $(SRCDIR)/dsm_cluster.c $(SRCDIR)/dsm_gossip.c
 CLUSTER_OBJ := $(BUILDDIR)/dsm_cluster.o $(BUILDDIR)/dsm_gossip.o
@@ -75,13 +71,6 @@ $(BUILDDIR)/dsm_server.o: $(SRCDIR)/dsm_server.c $(INCDIR)/dsm_protocol.h $(INCD
 $(BUILDDIR)/dsm_client.o: $(SRCDIR)/dsm_client.c $(INCDIR)/dsm_protocol.h $(INCDIR)/dsm_paging.h $(INCDIR)/dsm_config.h | $(BUILDDIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# High-level API objects (for shared library)
-$(BUILDDIR)/dsm_region.o: $(SRCDIR)/dsm_region.c $(INCDIR)/dsm_region.h $(INCDIR)/dsm_paging.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) -fPIC -c -o $@ $<
-
-$(BUILDDIR)/dsm_array.o: $(SRCDIR)/dsm_array.c $(INCDIR)/dsm_array.h $(INCDIR)/dsm_region.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) -fPIC -c -o $@ $<
-
 # PIC versions of common objects for shared library
 $(BUILDDIR)/dsm_common_pic.o: $(SRCDIR)/dsm_common.c $(INCDIR)/dsm_protocol.h | $(BUILDDIR)
 	$(CC) $(CFLAGS) -fPIC -c -o $@ $<
@@ -93,7 +82,7 @@ $(BUILDDIR)/dsm_config_pic.o: $(SRCDIR)/dsm_config.c $(INCDIR)/dsm_config.h | $(
 	$(CC) $(CFLAGS) -fPIC -c -o $@ $<
 
 # Shared library for Python bindings
-$(LIBRARY): $(API_OBJ) $(BUILDDIR)/dsm_common_pic.o $(BUILDDIR)/dsm_paging_pic.o $(BUILDDIR)/dsm_config_pic.o
+$(LIBRARY): $(BUILDDIR)/dsm_common_pic.o $(BUILDDIR)/dsm_paging_pic.o $(BUILDDIR)/dsm_config_pic.o
 	$(CC) -shared $(LDFLAGS) -o $@ $^
 	@echo "Built $(LIBRARY) for Python bindings"
 
@@ -110,12 +99,6 @@ $(CLIENT): $(BUILDDIR)/dsm_client.o $(COMMON_OBJ)
 # Convenience targets
 server: $(SERVER)
 client: $(CLIENT)
-
-# Example programs
-examples: $(LIBRARY)
-	@mkdir -p examples
-	$(CC) $(CFLAGS) -o examples/matrix_demo examples/matrix_demo.c -L. -Wl,-rpath,'$$ORIGIN/..' $(LIBRARY)
-	@echo "Built examples/matrix_demo"
 
 # Docker build (portable flags)
 docker: CFLAGS := $(DOCKER_CFLAGS)
@@ -138,7 +121,7 @@ perf: $(CLIENT) $(SERVER)
 
 clean:
 	rm -rf $(BUILDDIR) $(SERVER) $(CLIENT) $(LIBRARY)
-	rm -f examples/matmul_bench examples/cluster_bench examples/matrix_demo
+	rm -f examples/matmul_bench examples/cluster_bench
 
 # Test: end-to-end verify (write, evict, writeback, refetch), then unit tests
 test: $(SERVER) $(CLIENT)

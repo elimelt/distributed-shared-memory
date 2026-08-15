@@ -12,11 +12,10 @@ Similarly, this is not intended for multi-client workloads where coherence is re
 
 ## Architecture
 
-The system consists of three layers:
+The system consists of two layers:
 
-1. **Page API** (`dsm_paging.h`) -- Low-level page fault handling with clock-based eviction
-2. **Region API** (`dsm_region.h`) -- Contiguous byte-addressed memory regions
-3. **Array API** (`dsm_array.h`) -- Multi-dimensional typed arrays with strided indexing
+1. **Page API** (`dsm_paging.h`, C) -- Low-level page fault handling with clock-based eviction
+2. **Array API** (`python/dsm.py`, Python only) -- Multi-dimensional typed arrays with strided indexing, built on the Page API via `libdsm.so`
 
 Clients maintain a local page cache. On access, if the page is present and valid, the access completes locally. Otherwise, the client fetches the page from the server (or forwards the request to the owning node in a cluster). Dirty pages are written back on eviction.
 
@@ -107,26 +106,6 @@ Requires GCC with C11 support.
 
 # Node 3: owns pages 2048-3071
 ./dsm-server -p 9003 -c 10003 -r 2048:3072 -n 3072 -s localhost -S 10001
-```
-
-### C API
-
-```c
-#include "dsm_array.h"
-
-int fd = connect_to_server("localhost", 9999);
-dsm_context_t *ctx = dsm_create_context(256, 1024);
-ctx->sock_fd = fd;
-dsm_init_paging_system(ctx);
-
-size_t shape[] = {1000, 1000};
-dsm_array_t *A = dsm_array_create(ctx, DSM_DOUBLE, 2, shape);
-
-dsm_array_set_f64(A, 3.14, 50, 100);
-double val = dsm_array_get_f64(A, 50, 100);
-
-dsm_array_free(A);
-dsm_destroy_context(ctx);
 ```
 
 ### Python API
