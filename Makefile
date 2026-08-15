@@ -149,9 +149,9 @@ cluster-test: $(SERVER) $(CLIENT)
 	./$(SERVER) -p 9002 -c 10002 -r 1024:2048 -n 1024 -s localhost -S 10001 & PID2=$$!; \
 	sleep 3; \
 	echo "=== Running benchmark on node 1 ==="; \
-	timeout 30 ./$(CLIENT) -H localhost -p 9001 -N 1024 -i 5000 -b || true; \
+	timeout 30 ./$(CLIENT) -H localhost -p 9001 -N 1024 -i 5000 || true; \
 	echo "=== Running benchmark on node 2 ==="; \
-	timeout 30 ./$(CLIENT) -H localhost -p 9002 -N 1024 -i 5000 -b || true; \
+	timeout 30 ./$(CLIENT) -H localhost -p 9002 -N 1024 -i 5000 || true; \
 	kill $$PID1 $$PID2 2>/dev/null || true; wait $$PID1 $$PID2 2>/dev/null || true
 	@echo "=== Cluster test complete ==="
 

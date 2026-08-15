@@ -27,7 +27,6 @@ static void print_usage(const char *prog)
     fprintf(stderr, "  -l, --locality <pct>      Locality percentage 0-100 (default: 80)\n");
     fprintf(stderr, "  -w, --write-pct <pct>     Write percentage 0-100 (default: 10)\n");
     fprintf(stderr, "  -v, --verbose             Enable verbose output\n");
-    fprintf(stderr, "  -b, --benchmark           Enable benchmark mode\n");
     fprintf(stderr, "  -t, --verify              Verify end-to-end round-trip and exit\n");
     fprintf(stderr, "  -h, --help                Show this help message\n");
     fprintf(stderr, "\nEnvironment variables:\n");
@@ -39,7 +38,6 @@ static void print_usage(const char *prog)
     fprintf(stderr, "  DSM_LOCALITY_PERCENT  Locality percentage\n");
     fprintf(stderr, "  DSM_WRITE_PERCENT     Write percentage\n");
     fprintf(stderr, "  DSM_VERBOSE           Enable verbose (set to 1)\n");
-    fprintf(stderr, "  DSM_BENCHMARK         Enable benchmark mode (set to 1)\n");
     fprintf(stderr, "  DSM_VERIFY            Enable verify mode (set to 1)\n");
 }
 
@@ -190,59 +188,6 @@ static int run_verify(dsm_context_t *ctx, const dsm_client_config_t *cfg)
     return 0;
 }
 
-static void interactive_mode(dsm_context_t *ctx)
-{
-    char line[256];
-    printf("DSM Interactive Mode\n");
-    printf("Commands: read <page>, write <page> <value>, stats, quit\n");
-
-    while (1) {
-        printf("> ");
-        fflush(stdout);
-
-        if (!fgets(line, sizeof(line), stdin))
-            break;
-
-        line[strcspn(line, "\n")] = '\0';
-
-        if (strncmp(line, "read ", 5) == 0) {
-            uint16_t page_id = (uint16_t)atoi(line + 5);
-            void *ptr = dsm_access_page(ctx, page_id, 0);
-            if (ptr) {
-                printf("Page %u: first byte = 0x%02x\n",
-                       page_id, ((uint8_t *)ptr)[0]);
-            } else {
-                printf("Failed to read page %u\n", page_id);
-            }
-        } else if (strncmp(line, "write ", 6) == 0) {
-            uint16_t page_id;
-            uint32_t value;
-            if (sscanf(line + 6, "%hu %u", &page_id, &value) == 2) {
-                void *ptr = dsm_access_page(ctx, page_id, 1);
-                if (ptr) {
-                    ((uint8_t *)ptr)[0] = (uint8_t)value;
-                    printf("Wrote 0x%02x to page %u\n", (uint8_t)value, page_id);
-                } else {
-                    printf("Failed to write to page %u\n", page_id);
-                }
-            } else {
-                printf("Usage: write <page> <value>\n");
-            }
-        } else if (strcmp(line, "stats") == 0) {
-            printf("Local hits:     %lu\n", ctx->local_hits);
-            printf("Remote fetches: %lu\n", ctx->remote_fetches);
-            printf("Evictions:      %lu\n", ctx->evictions);
-        } else if (strcmp(line, "quit") == 0 || strcmp(line, "q") == 0) {
-            break;
-        } else if (strlen(line) > 0) {
-            printf("Unknown command: %s\n", line);
-            printf("Commands: read <page>, write <page> <value>, stats, quit\n");
-        }
-    }
-
-    printf("Goodbye!\n");
-}
-
 static struct option long_options[] = {
     {"host",        required_argument, 0, 'H'},
     {"port",        required_argument, 0, 'p'},
@@ -252,7 +197,6 @@ static struct option long_options[] = {
     {"locality",    required_argument, 0, 'l'},
     {"write-pct",   required_argument, 0, 'w'},
     {"verbose",     no_argument,       0, 'v'},
-    {"benchmark",   no_argument,       0, 'b'},
     {"verify",      no_argument,       0, 't'},
     {"help",        no_argument,       0, 'h'},
     {0, 0, 0, 0}
@@ -264,7 +208,7 @@ int main(int argc, char **argv)
     dsm_client_config_from_env(&cfg);
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "H:p:n:N:i:l:w:vbth", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "H:p:n:N:i:l:w:vth", long_options, NULL)) != -1) {
         switch (opt) {
         case 'H':
             cfg.host = optarg;
@@ -289,9 +233,6 @@ int main(int argc, char **argv)
             break;
         case 'v':
             cfg.verbose = true;
-            break;
-        case 'b':
-            cfg.benchmark_mode = true;
             break;
         case 't':
             cfg.verify_mode = true;
@@ -353,10 +294,8 @@ int main(int argc, char **argv)
     int exit_code = 0;
     if (cfg.verify_mode) {
         exit_code = run_verify(ctx, &cfg);
-    } else if (cfg.benchmark_mode) {
-        run_benchmark(ctx, &cfg);
     } else {
-        interactive_mode(ctx);
+        run_benchmark(ctx, &cfg);
     }
 
     if (cfg.verbose) {
