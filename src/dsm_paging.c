@@ -6,6 +6,7 @@
 
 #include "dsm_paging.h"
 #include "dsm_protocol.h"
+#include "dsm_log.h"
 
 #define likely(x)   __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
@@ -45,8 +46,8 @@ static uint32_t evict_page(dsm_context_t *ctx)
                 if (page->dirty && page->location == LOC_REMOTE) {
                     void *data = frame_to_ptr(ctx, victim);
                     if (dsm_rpc_put(ctx->sock_fd, frame->page_number, data) < 0) {
-                        fprintf(stderr, "writeback failed for page %u\n",
-                                frame->page_number);
+                        DSM_LOG_ERROR("writeback failed for page %u",
+                                      frame->page_number);
                         return DSM_NO_FRAME;
                     }
                 }
@@ -166,7 +167,7 @@ void *dsm_access_page_slow(dsm_context_t *ctx, uint32_t page_id, int write,
     int should_fetch = (ctx->sock_fd >= 0);
     if (should_fetch) {
         if (unlikely(dsm_rpc_get(ctx->sock_fd, page_id, frame_ptr) < 0)) {
-            fprintf(stderr, "RPC fetch failed for page %u\n", page_id);
+            DSM_LOG_ERROR("RPC fetch failed for page %u", page_id);
             push_free_frame(ctx, frame);
             return NULL;
         }

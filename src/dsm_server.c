@@ -18,6 +18,7 @@
 #include "dsm_protocol.h"
 #include "dsm_config.h"
 #include "dsm_cluster.h"
+#include "dsm_log.h"
 
 static atomic_int running = 1;
 static cluster_ctx_t *g_cluster = NULL;
@@ -72,13 +73,13 @@ static int start_server(const dsm_server_config_t *cfg)
 {
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd < 0) {
-        perror("socket");
+        DSM_LOG_ERROR("socket: %s", strerror(errno));
         return -1;
     }
 
     int opt = 1;
     if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        perror("setsockopt SO_REUSEADDR");
+        DSM_LOG_ERROR("setsockopt SO_REUSEADDR: %s", strerror(errno));
         close(listen_fd);
         return -1;
     }
@@ -91,24 +92,24 @@ static int start_server(const dsm_server_config_t *cfg)
     addr.sin_family = AF_INET;
     addr.sin_port = htons(cfg->port);
     if (inet_pton(AF_INET, cfg->bind_addr, &addr.sin_addr) <= 0) {
-        fprintf(stderr, "Invalid bind address: %s\n", cfg->bind_addr);
+        DSM_LOG_ERROR("Invalid bind address: %s", cfg->bind_addr);
         close(listen_fd);
         return -1;
     }
 
     if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("bind");
+        DSM_LOG_ERROR("bind: %s", strerror(errno));
         close(listen_fd);
         return -1;
     }
 
     if (listen(listen_fd, 128) < 0) {
-        perror("listen");
+        DSM_LOG_ERROR("listen: %s", strerror(errno));
         close(listen_fd);
         return -1;
     }
 
-    printf("DSM Server listening on %s:%d\n", cfg->bind_addr, cfg->port);
+    DSM_LOG_INFO("DSM Server listening on %s:%d", cfg->bind_addr, cfg->port);
     return listen_fd;
 }
 
@@ -178,9 +179,9 @@ static void *handle_client_thread(void *arg)
         }
     }
 
-    printf("Client done: served=%lu written=%lu forwarded=%lu\n",
-           (unsigned long)pages_served, (unsigned long)pages_written,
-           (unsigned long)pages_forwarded);
+    DSM_LOG_DEBUG("Client done: served=%lu written=%lu forwarded=%lu",
+                  (unsigned long)pages_served, (unsigned long)pages_written,
+                  (unsigned long)pages_forwarded);
     free(cta);
     return NULL;
 }
@@ -220,7 +221,7 @@ int main(int argc, char **argv)
         case 'c': ccfg.cluster_port = (uint16_t)dsm_parse_long(optarg, "-c/--cluster-port", 1, 65535); break;
         case 'r':
             if (sscanf(optarg, "%u:%u", &ccfg.page_range_start, &ccfg.page_range_end) != 2) {
-                fprintf(stderr, "Invalid range: %s\n", optarg);
+                DSM_LOG_ERROR("Invalid range: %s", optarg);
                 print_usage(argv[0]);
                 return 1;
             }
@@ -231,6 +232,8 @@ int main(int argc, char **argv)
         }
     }
 
+    dsm_log_verbose = cfg.verbose ? 1 : 0;
+
     struct sigaction sa = { .sa_handler = handle_signal };
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
@@ -240,7 +243,7 @@ int main(int argc, char **argv)
     g_storage = mmap(NULL, storage_size, PROT_READ | PROT_WRITE,
                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, -1, 0);
     if (g_storage == MAP_FAILED) {
-        perror("mmap storage");
+        DSM_LOG_ERROR("mmap storage: %s", strerror(errno));
         return 1;
     }
     madvise(g_storage, storage_size, MADV_WILLNEED);
@@ -249,17 +252,17 @@ int main(int argc, char **argv)
         uint32_t local_addr = get_local_addr();
         g_cluster = cluster_create(&ccfg, local_addr, cfg.port);
         if (!g_cluster) {
-            fprintf(stderr, "Failed to create cluster context\n");
+            DSM_LOG_ERROR("Failed to create cluster context");
             munmap(g_storage, storage_size);
             return 1;
         }
         if (cluster_start(g_cluster) < 0) {
-            fprintf(stderr, "Failed to start cluster\n");
+            DSM_LOG_ERROR("Failed to start cluster");
             munmap(g_storage, storage_size);
             return 1;
         }
         if (ccfg.seed_addr && cluster_join(g_cluster) < 0) {
-            fprintf(stderr, "Warning: failed to join cluster via seed\n");
+            DSM_LOG_WARN("failed to join cluster via seed");
         }
         if (cfg.verbose) cluster_config_print(&ccfg);
     }
@@ -276,7 +279,7 @@ int main(int argc, char **argv)
     size_t slot_count = 0;
     client_slot_t *slots = malloc(slot_cap * sizeof(*slots));
     if (!slots) {
-        perror("malloc");
+        DSM_LOG_ERROR("malloc: %s", strerror(errno));
         close(listen_fd);
         munmap(g_storage, storage_size);
         return 1;
@@ -288,7 +291,7 @@ int main(int argc, char **argv)
         int client_fd = accept(listen_fd, (struct sockaddr *)&client_addr, &client_len);
         if (client_fd < 0) {
             if (errno == EINTR) continue;
-            perror("accept");
+            DSM_LOG_ERROR("accept: %s", strerror(errno));
             break;
         }
 
@@ -296,12 +299,11 @@ int main(int argc, char **argv)
 
         char client_ip[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, sizeof(client_ip));
-        if (cfg.verbose)
-            printf("Client from %s:%d\n", client_ip, ntohs(client_addr.sin_port));
+        DSM_LOG_DEBUG("Client from %s:%d", client_ip, ntohs(client_addr.sin_port));
 
         client_thread_arg_t *cta = malloc(sizeof(*cta));
         if (!cta) {
-            perror("malloc");
+            DSM_LOG_ERROR("malloc: %s", strerror(errno));
             close(client_fd);
             continue;
         }
@@ -320,7 +322,7 @@ int main(int argc, char **argv)
             if (slot_count == slot_cap) {
                 client_slot_t *grown = realloc(slots, 2 * slot_cap * sizeof(*slots));
                 if (!grown) {
-                    perror("realloc");
+                    DSM_LOG_ERROR("realloc: %s", strerror(errno));
                     close(client_fd);
                     free(cta);
                     continue;
@@ -331,8 +333,9 @@ int main(int argc, char **argv)
         }
 
         pthread_t tid;
-        if (pthread_create(&tid, NULL, handle_client_thread, cta) != 0) {
-            perror("pthread_create");
+        int rc = pthread_create(&tid, NULL, handle_client_thread, cta);
+        if (rc != 0) {
+            DSM_LOG_ERROR("pthread_create: %s", strerror(rc));
             close(client_fd);
             free(cta);
             continue;
@@ -352,7 +355,7 @@ int main(int argc, char **argv)
     free(slots);
     if (g_cluster) cluster_destroy(g_cluster);
     munmap(g_storage, storage_size);
-    printf("Server shutdown\n");
+    DSM_LOG_INFO("Server shutdown");
     return 0;
 }
 

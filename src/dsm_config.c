@@ -5,6 +5,7 @@
 
 #include "dsm_config.h"
 #include "dsm_protocol.h"
+#include "dsm_log.h"
 
 long dsm_env_long(const char *name, long dflt, long min, long max)
 {
@@ -17,8 +18,8 @@ long dsm_env_long(const char *name, long dflt, long min, long max)
     char *end = NULL;
     long n = strtol(val, &end, 10);
     if (errno != 0 || end == val || *end != '\0' || n < min || n > max) {
-        fprintf(stderr, "Warning: invalid %s='%s' (expected %ld..%ld); using default %ld\n",
-                name, val, min, max, dflt);
+        DSM_LOG_WARN("invalid %s='%s' (expected %ld..%ld); using default %ld",
+                     name, val, min, max, dflt);
         return dflt;
     }
     return n;
@@ -45,8 +46,8 @@ long dsm_parse_long(const char *arg, const char *flagname, long min, long max)
     char *end = NULL;
     long n = strtol(arg, &end, 10);
     if (errno != 0 || end == arg || *end != '\0' || n < min || n > max) {
-        fprintf(stderr, "Invalid value for %s: '%s' (expected %ld..%ld)\n",
-                flagname, arg, min, max);
+        DSM_LOG_ERROR("Invalid value for %s: '%s' (expected %ld..%ld)",
+                      flagname, arg, min, max);
         if (g_usage_fn) {
             g_usage_fn(g_usage_prog);
         }
@@ -180,16 +181,16 @@ void dsm_client_config_print(const dsm_client_config_t *cfg)
         return;
     }
 
-    printf("Client Configuration:\n");
-    printf("  Host:              %s\n", cfg->host ? cfg->host : "(null)");
-    printf("  Port:              %u\n", cfg->port);
-    printf("  Num Pages:         %u\n", cfg->num_pages);
-    printf("  Num Virtual Pages: %u\n", cfg->num_virtual_pages);
-    printf("  Num Iterations:    %u\n", cfg->num_iterations);
-    printf("  Locality Percent:  %u%%\n", cfg->locality_percent);
-    printf("  Write Percent:     %u%%\n", cfg->write_percent);
-    printf("  Verbose:           %s\n", cfg->verbose ? "true" : "false");
-    printf("  Verify Mode:       %s\n", cfg->verify_mode ? "true" : "false");
+    DSM_LOG_INFO("Client Configuration:");
+    DSM_LOG_INFO("  Host:              %s", cfg->host ? cfg->host : "(null)");
+    DSM_LOG_INFO("  Port:              %u", cfg->port);
+    DSM_LOG_INFO("  Num Pages:         %u", cfg->num_pages);
+    DSM_LOG_INFO("  Num Virtual Pages: %u", cfg->num_virtual_pages);
+    DSM_LOG_INFO("  Num Iterations:    %u", cfg->num_iterations);
+    DSM_LOG_INFO("  Locality Percent:  %u%%", cfg->locality_percent);
+    DSM_LOG_INFO("  Write Percent:     %u%%", cfg->write_percent);
+    DSM_LOG_INFO("  Verbose:           %s", cfg->verbose ? "true" : "false");
+    DSM_LOG_INFO("  Verify Mode:       %s", cfg->verify_mode ? "true" : "false");
 }
 
 void dsm_server_config_print(const dsm_server_config_t *cfg)
@@ -198,11 +199,11 @@ void dsm_server_config_print(const dsm_server_config_t *cfg)
         return;
     }
 
-    printf("Server Configuration:\n");
-    printf("  Port:              %u\n", cfg->port);
-    printf("  Num Virtual Pages: %u\n", cfg->num_virtual_pages);
-    printf("  Verbose:           %s\n", cfg->verbose ? "true" : "false");
-    printf("  Bind Address:      %s\n", cfg->bind_addr ? cfg->bind_addr : "(null)");
+    DSM_LOG_INFO("Server Configuration:");
+    DSM_LOG_INFO("  Port:              %u", cfg->port);
+    DSM_LOG_INFO("  Num Virtual Pages: %u", cfg->num_virtual_pages);
+    DSM_LOG_INFO("  Verbose:           %s", cfg->verbose ? "true" : "false");
+    DSM_LOG_INFO("  Bind Address:      %s", cfg->bind_addr ? cfg->bind_addr : "(null)");
 }
 
 void cluster_config_print(const cluster_config_t *cfg)
@@ -211,12 +212,12 @@ void cluster_config_print(const cluster_config_t *cfg)
         return;
     }
 
-    printf("Cluster Configuration:\n");
-    printf("  Seed:          %s:%u\n", cfg->seed_addr ? cfg->seed_addr : "(none)", cfg->seed_port);
-    printf("  Cluster Port:  %u\n", cfg->cluster_port);
-    printf("  Heartbeat:     %u ms\n", cfg->heartbeat_ms);
-    printf("  Gossip:        %u ms\n", cfg->gossip_ms);
-    printf("  Timeout:       %u ms\n", cfg->timeout_ms);
-    printf("  Page Range:    %u - %u\n", cfg->page_range_start, cfg->page_range_end);
+    DSM_LOG_INFO("Cluster Configuration:");
+    DSM_LOG_INFO("  Seed:          %s:%u", cfg->seed_addr ? cfg->seed_addr : "(none)", cfg->seed_port);
+    DSM_LOG_INFO("  Cluster Port:  %u", cfg->cluster_port);
+    DSM_LOG_INFO("  Heartbeat:     %u ms", cfg->heartbeat_ms);
+    DSM_LOG_INFO("  Gossip:        %u ms", cfg->gossip_ms);
+    DSM_LOG_INFO("  Timeout:       %u ms", cfg->timeout_ms);
+    DSM_LOG_INFO("  Page Range:    %u - %u", cfg->page_range_start, cfg->page_range_end);
 }
 

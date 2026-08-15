@@ -14,6 +14,7 @@
 #include "dsm_protocol.h"
 #include "dsm_paging.h"
 #include "dsm_config.h"
+#include "dsm_log.h"
 
 #define LCG_MULT 1103515245u
 #define LCG_INC  12345u
@@ -69,7 +70,7 @@ static int connect_to_server(const char *host, uint16_t port, int max_retries)
 
     int err = getaddrinfo(host, port_str, &hints, &res);
     if (err != 0) {
-        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(err));
+        DSM_LOG_ERROR("getaddrinfo: %s", gai_strerror(err));
         return -1;
     }
 
@@ -81,7 +82,7 @@ static int connect_to_server(const char *host, uint16_t port, int max_retries)
 
             if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) {
                 if (dsm_setup_socket_optimal(fd) < 0) {
-                    fprintf(stderr, "Warning: failed to optimize socket\n");
+                    DSM_LOG_WARN("failed to optimize socket");
                 }
                 freeaddrinfo(res);
                 return fd;
@@ -92,14 +93,14 @@ static int connect_to_server(const char *host, uint16_t port, int max_retries)
         }
 
         if (attempt < max_retries - 1) {
-            fprintf(stderr, "Connection failed, retrying in %d ms...\n", retry_delay_ms);
+            DSM_LOG_WARN("Connection failed, retrying in %d ms...", retry_delay_ms);
             usleep(retry_delay_ms * 1000);
             retry_delay_ms *= 2;
         }
     }
 
     freeaddrinfo(res);
-    fprintf(stderr, "Failed to connect after %d attempts\n", max_retries);
+    DSM_LOG_ERROR("Failed to connect after %d attempts", max_retries);
     return -1;
 }
 
@@ -137,7 +138,7 @@ static int run_benchmark(dsm_context_t *ctx, const dsm_client_config_t *cfg)
 
         void *page_ptr = dsm_access_page(ctx, page_id, is_write);
         if (!page_ptr && ctx->page_table[page_id].location == LOC_REMOTE) {
-            fprintf(stderr, "Failed to access page %u\n", page_id);
+            DSM_LOG_ERROR("Failed to access page %u", page_id);
             failed = 1;
             break;
         }
@@ -175,7 +176,7 @@ static int run_verify(dsm_context_t *ctx, const dsm_client_config_t *cfg)
     for (uint32_t p = 0; p < cfg->num_virtual_pages; p++) {
         uint8_t *ptr = dsm_access_page(ctx, p, 1);
         if (!ptr) {
-            fprintf(stderr, "VERIFY FAILED: cannot access page %u for write\n", p);
+            DSM_LOG_ERROR("VERIFY FAILED: cannot access page %u for write", p);
             return 1;
         }
         for (uint32_t i = 0; i < PAGE_SIZE; i++)
@@ -186,13 +187,13 @@ static int run_verify(dsm_context_t *ctx, const dsm_client_config_t *cfg)
     for (uint32_t p = 0; p < cfg->num_virtual_pages; p++) {
         uint8_t *ptr = dsm_access_page(ctx, p, 0);
         if (!ptr) {
-            fprintf(stderr, "VERIFY FAILED: cannot access page %u for read\n", p);
+            DSM_LOG_ERROR("VERIFY FAILED: cannot access page %u for read", p);
             return 1;
         }
         for (uint32_t i = 0; i < PAGE_SIZE; i++)
             expected[i] = (uint8_t)((p * 2654435761u + i) & 0xFF);
         if (memcmp(ptr, expected, PAGE_SIZE) != 0) {
-            fprintf(stderr, "VERIFY FAILED: page %u contents mismatch\n", p);
+            DSM_LOG_ERROR("VERIFY FAILED: page %u contents mismatch", p);
             return 1;
         }
     }
@@ -261,6 +262,8 @@ int main(int argc, char **argv)
         }
     }
 
+    dsm_log_verbose = cfg.verbose ? 1 : 0;
+
     if (cfg.verify_mode) {
         /* Force a virtual range 4x the local cache so verification
          * exercises eviction, writeback, and refetch. */
@@ -268,19 +271,19 @@ int main(int argc, char **argv)
     }
 
     if (cfg.locality_percent > 100) {
-        fprintf(stderr, "Error: locality percentage must be 0-100\n");
+        DSM_LOG_ERROR("locality percentage must be 0-100");
         return 1;
     }
     if (cfg.write_percent > 100) {
-        fprintf(stderr, "Error: write percentage must be 0-100\n");
+        DSM_LOG_ERROR("write percentage must be 0-100");
         return 1;
     }
     if (cfg.num_pages == 0 || cfg.num_virtual_pages == 0) {
-        fprintf(stderr, "Error: page counts must be > 0\n");
+        DSM_LOG_ERROR("page counts must be > 0");
         return 1;
     }
     if (cfg.num_pages > cfg.num_virtual_pages) {
-        fprintf(stderr, "Error: local pages cannot exceed virtual pages\n");
+        DSM_LOG_ERROR("local pages cannot exceed virtual pages");
         return 1;
     }
 
@@ -290,17 +293,15 @@ int main(int argc, char **argv)
 
     int sock_fd = connect_to_server(cfg.host, cfg.port, MAX_RETRY_ATTEMPTS);
     if (sock_fd < 0) {
-        fprintf(stderr, "Failed to connect to server %s:%u\n", cfg.host, cfg.port);
+        DSM_LOG_ERROR("Failed to connect to server %s:%u", cfg.host, cfg.port);
         return 1;
     }
 
-    if (cfg.verbose) {
-        printf("Connected to %s:%u\n", cfg.host, cfg.port);
-    }
+    DSM_LOG_DEBUG("Connected to %s:%u", cfg.host, cfg.port);
 
     dsm_context_t *ctx = dsm_create_context(cfg.num_pages, cfg.num_virtual_pages);
     if (!ctx) {
-        fprintf(stderr, "Failed to create DSM context\n");
+        DSM_LOG_ERROR("Failed to create DSM context");
         close(sock_fd);
         return 1;
     }

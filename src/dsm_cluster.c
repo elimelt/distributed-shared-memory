@@ -31,14 +31,6 @@ struct cluster_ctx {
     int              peer_fds[CLUSTER_MAX_NODES];
 };
 
-static uint64_t
-now_ms(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
-}
-
 static void
 generate_node_id(uint8_t *id)
 {
@@ -85,15 +77,15 @@ merge_node(cluster_state_t *s, const cluster_node_t *node)
             existing->range_end = node->range_end;
             existing->incarnation = node->incarnation;
             existing->state = node->state;
-            existing->last_seen = now_ms();
+            existing->last_seen = dsm_now_ms();
         } else if (node->incarnation == existing->incarnation) {
-            existing->last_seen = now_ms();
+            existing->last_seen = dsm_now_ms();
             if (node->state == NODE_STATE_ALIVE)
                 existing->state = NODE_STATE_ALIVE;
         }
     } else if (s->node_count < CLUSTER_MAX_NODES) {
         s->nodes[s->node_count] = *node;
-        s->nodes[s->node_count].last_seen = now_ms();
+        s->nodes[s->node_count].last_seen = dsm_now_ms();
         s->node_count++;
     }
 }
@@ -129,7 +121,7 @@ cluster_create(const cluster_config_t *cfg, uint32_t local_addr, uint16_t client
     ctx->self.range_end = cfg->page_range_end;
     ctx->self.incarnation = 1;
     ctx->self.state = NODE_STATE_ALIVE;
-    ctx->self.last_seen = now_ms();
+    ctx->self.last_seen = dsm_now_ms();
 
     ctx->state.nodes[0] = ctx->self;
     ctx->state.node_count = 1;
@@ -211,7 +203,7 @@ heartbeat_loop(void *arg)
 
     while (ctx->running) {
         usleep(ctx->cfg.heartbeat_ms * 1000 / 4);
-        uint64_t now = now_ms();
+        uint64_t now = dsm_now_ms();
 
         pthread_rwlock_wrlock(&ctx->state.lock);
         for (int i = 0; i < ctx->state.node_count; i++) {

@@ -9,10 +9,20 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <time.h>
 
 #include "dsm_protocol.h"
+#include "dsm_log.h"
 
 #define BUSY_POLL_US 50
+
+int dsm_log_verbose = 0;
+
+uint64_t dsm_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
 
 dsm_rpc_header_t dsm_rpc_make_header(uint8_t op, uint32_t page_id) {
     dsm_rpc_header_t h;

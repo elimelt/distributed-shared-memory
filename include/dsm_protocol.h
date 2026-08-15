@@ -27,6 +27,9 @@ typedef struct __attribute__((packed)) {
 /* single place that builds fully zero-initialized headers (.pad included) */
 dsm_rpc_header_t dsm_rpc_make_header(uint8_t op, uint32_t page_id);
 
+/* monotonic clock in milliseconds (clock_gettime CLOCK_MONOTONIC) */
+uint64_t dsm_now_ms(void);
+
 int dsm_send_full(int fd, const void *buf, size_t len, int flags);
 int dsm_recv_full(int fd, void *buf, size_t len);
 int dsm_sendv(int fd, const struct iovec *iov, int iovcnt);
