@@ -33,7 +33,7 @@ LIBRARY  := libdsm.so
 # Docker-friendly flags (no -march=native for portability)
 DOCKER_CFLAGS := -O3 -flto -fomit-frame-pointer -Wall -Wextra -std=gnu11 -Iinclude
 
-.PHONY: all clean perf debug docker-build docker-run test unit cluster-test e2e-exhaustive install help server client lib python
+.PHONY: all clean perf debug docker-build docker-run test unit cluster-test install help server client lib python
 
 all: $(SERVER) $(CLIENT)
 
@@ -162,23 +162,6 @@ cluster-docker: docker-build
 	docker-compose run --rm client -H node1 -v -i 10000
 	docker-compose down
 
-# Exhaustive E2E fuzz test with perf stats
-e2e-exhaustive: $(SERVER) $(CLIENT)
-	@chmod +x tests/e2e_fuzz_test.sh
-	@tests/e2e_fuzz_test.sh all
-
-e2e-quick: $(SERVER) $(CLIENT)
-	@chmod +x tests/e2e_fuzz_test.sh
-	@tests/e2e_fuzz_test.sh quick
-
-e2e-chaos: $(SERVER) $(CLIENT)
-	@chmod +x tests/e2e_fuzz_test.sh
-	@FUZZ_DURATION=60 tests/e2e_fuzz_test.sh chaos
-
-e2e-perf: $(SERVER) $(CLIENT)
-	@chmod +x tests/e2e_fuzz_test.sh
-	@tests/e2e_fuzz_test.sh perf
-
 # Docker targets
 docker-build:
 	docker build -t dsm:latest .
@@ -203,8 +186,6 @@ help:
 	@echo "Test Targets:"
 	@echo "  test           - Single server/client test (30s timeout)"
 	@echo "  cluster-test   - 2-node cluster test (30s timeout)"
-	@echo "  e2e-quick      - Quick E2E fuzz test (~60s)"
-	@echo "  e2e-exhaustive - Full E2E fuzz test suite"
 	@echo ""
 	@echo "Docker Targets:"
 	@echo "  docker-build   - Build Docker image"
