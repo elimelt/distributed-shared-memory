@@ -127,7 +127,7 @@ static void *handle_client_thread(void *arg)
     static uint8_t zero_page[PAGE_SIZE] __attribute__((aligned(64)));
 
     while (atomic_load_explicit(&running, memory_order_relaxed)) {
-        dsm_rpc_header req;
+        dsm_rpc_header_t req;
         if (__builtin_expect(dsm_recv_full(client_fd, &req, sizeof(req)) < 0, 0))
             break;
 
@@ -137,18 +137,18 @@ static void *handle_client_thread(void *arg)
             if (__builtin_expect(is_local && req.page_id < g_storage_pages, 1)) {
                 void *data = g_storage + ((size_t)req.page_id * PAGE_SIZE);
                 __builtin_prefetch(data + PAGE_SIZE, 0, 1);
-                if (dsm_send_full(client_fd, data, PAGE_SIZE) < 0) break;
+                if (dsm_send_full(client_fd, data, PAGE_SIZE, 0) < 0) break;
                 pages_served++;
             } else if (g_cluster) {
                 if (cluster_forward_get(g_cluster, req.page_id, page_buf) == 0) {
                     pages_forwarded++;
                 } else {
-                    if (dsm_send_full(client_fd, zero_page, PAGE_SIZE) < 0) break;
+                    if (dsm_send_full(client_fd, zero_page, PAGE_SIZE, 0) < 0) break;
                     continue;
                 }
-                if (dsm_send_full(client_fd, page_buf, PAGE_SIZE) < 0) break;
+                if (dsm_send_full(client_fd, page_buf, PAGE_SIZE, 0) < 0) break;
             } else {
-                if (dsm_send_full(client_fd, zero_page, PAGE_SIZE) < 0) break;
+                if (dsm_send_full(client_fd, zero_page, PAGE_SIZE, 0) < 0) break;
             }
         } else if (req.op == OP_PUT_PAGE) {
             if (dsm_recv_full(client_fd, page_buf, PAGE_SIZE) < 0)
@@ -159,9 +159,17 @@ static void *handle_client_thread(void *arg)
                 memcpy(dest, page_buf, PAGE_SIZE);
                 pages_written++;
             } else if (g_cluster) {
-                cluster_forward_put(g_cluster, req.page_id, page_buf);
+                /* ACK only a successful forward; failure is fatal for
+                 * this client connection */
+                if (cluster_forward_put(g_cluster, req.page_id, page_buf) < 0)
+                    break;
                 pages_forwarded++;
+            } else {
+                break;
             }
+
+            dsm_rpc_header_t ack = dsm_rpc_make_header(OP_ACK, req.page_id);
+            if (dsm_send_full(client_fd, &ack, sizeof(ack), 0) < 0) break;
         }
     }
 

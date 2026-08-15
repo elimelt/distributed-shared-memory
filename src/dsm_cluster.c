@@ -432,13 +432,7 @@ cluster_forward_get(cluster_ctx_t *ctx, uint32_t page_id, void *buf)
     int fd = get_peer_connection(ctx, &owner);
     if (fd < 0) return -1;
 
-    dsm_rpc_header req = { .op = OP_GET_PAGE, .page_id = page_id };
-    if (dsm_send_full(fd, &req, sizeof(req)) < 0)
-        return -1;
-    if (dsm_recv_full(fd, buf, PAGE_SIZE) < 0)
-        return -1;
-
-    return 0;
+    return dsm_rpc_get(fd, page_id, buf);
 }
 
 int
@@ -451,12 +445,6 @@ cluster_forward_put(cluster_ctx_t *ctx, uint32_t page_id, const void *buf)
     int fd = get_peer_connection(ctx, &owner);
     if (fd < 0) return -1;
 
-    dsm_rpc_header req = { .op = OP_PUT_PAGE, .page_id = page_id };
-    if (dsm_send_full(fd, &req, sizeof(req)) < 0)
-        return -1;
-    if (dsm_send_full(fd, buf, PAGE_SIZE) < 0)
-        return -1;
-
-    return 0;
+    return dsm_rpc_put(fd, page_id, buf);
 }
 
