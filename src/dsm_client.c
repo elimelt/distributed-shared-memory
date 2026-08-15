@@ -9,11 +9,22 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-#include <x86intrin.h>
+#include <time.h>
 
 #include "dsm_protocol.h"
 #include "dsm_paging.h"
 #include "dsm_config.h"
+
+#define LCG_MULT 1103515245u
+#define LCG_INC  12345u
+#define LCG_SEED 12345u
+
+static uint64_t now_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
 
 static void print_usage(const char *prog)
 {
@@ -92,7 +103,7 @@ static int connect_to_server(const char *host, uint16_t port, int max_retries)
     return -1;
 }
 
-static void run_benchmark(dsm_context_t *ctx, const dsm_client_config_t *cfg)
+static int run_benchmark(dsm_context_t *ctx, const dsm_client_config_t *cfg)
 {
     printf("=== DSM Benchmark ===\n");
     printf("Local cache: %u pages, Virtual pages: %u\n",
@@ -105,11 +116,12 @@ static void run_benchmark(dsm_context_t *ctx, const dsm_client_config_t *cfg)
         ctx->page_table[i].location = (i < cfg->num_pages) ? LOC_LOCAL : LOC_REMOTE;
     }
 
-    uint32_t lcg_state = 12345;
-    uint64_t start_cycles = __rdtsc();
+    uint32_t lcg_state = LCG_SEED;
+    int failed = 0;
+    uint64_t start_ns = now_ns();
 
     for (uint32_t i = 0; i < cfg->num_iterations; i++) {
-        lcg_state = lcg_state * 1103515245 + 12345;
+        lcg_state = lcg_state * LCG_MULT + LCG_INC;
         uint32_t rand_val = (lcg_state >> 16) & 0x7FFF;
 
         uint32_t page_id;
@@ -119,13 +131,14 @@ static void run_benchmark(dsm_context_t *ctx, const dsm_client_config_t *cfg)
             page_id = cfg->num_pages + (rand_val % (cfg->num_virtual_pages - cfg->num_pages));
         }
 
-        lcg_state = lcg_state * 1103515245 + 12345;
+        lcg_state = lcg_state * LCG_MULT + LCG_INC;
         uint32_t write_rand = (lcg_state >> 16) & 0x7FFF;
         int is_write = (write_rand % 100) < cfg->write_percent;
 
         void *page_ptr = dsm_access_page(ctx, page_id, is_write);
         if (!page_ptr && ctx->page_table[page_id].location == LOC_REMOTE) {
             fprintf(stderr, "Failed to access page %u\n", page_id);
+            failed = 1;
             break;
         }
 
@@ -137,20 +150,20 @@ static void run_benchmark(dsm_context_t *ctx, const dsm_client_config_t *cfg)
         }
     }
 
-    uint64_t end_cycles = __rdtsc();
-    uint64_t total_cycles = end_cycles - start_cycles;
+    uint64_t total_ns = now_ns() - start_ns;
     uint64_t total_accesses = ctx->local_hits + ctx->remote_fetches;
     double hit_rate = (total_accesses > 0) ?
         (100.0 * ctx->local_hits / total_accesses) : 0.0;
 
     printf("\n=== Results ===\n");
-    printf("Total cycles:    %lu\n", total_cycles);
-    printf("Cycles/access:   %.2f\n",
-           cfg->num_iterations > 0 ? (double)total_cycles / cfg->num_iterations : 0.0);
+    printf("Total ns:        %lu\n", (unsigned long)total_ns);
+    printf("ns/access:       %.2f\n",
+           cfg->num_iterations > 0 ? (double)total_ns / cfg->num_iterations : 0.0);
     printf("Local hits:      %lu\n", ctx->local_hits);
     printf("Remote fetches:  %lu\n", ctx->remote_fetches);
     printf("Evictions:       %lu\n", ctx->evictions);
     printf("Hit rate:        %.2f%%\n", hit_rate);
+    return failed;
 }
 
 static int run_verify(dsm_context_t *ctx, const dsm_client_config_t *cfg)
@@ -295,7 +308,7 @@ int main(int argc, char **argv)
     if (cfg.verify_mode) {
         exit_code = run_verify(ctx, &cfg);
     } else {
-        run_benchmark(ctx, &cfg);
+        exit_code = run_benchmark(ctx, &cfg);
     }
 
     if (cfg.verbose) {

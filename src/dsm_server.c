@@ -16,7 +16,6 @@
 #include <ifaddrs.h>
 
 #include "dsm_protocol.h"
-#include "dsm_paging.h"
 #include "dsm_config.h"
 #include "dsm_cluster.h"
 
@@ -113,10 +112,16 @@ static int start_server(const dsm_server_config_t *cfg)
     return listen_fd;
 }
 
+#define MAX_CLIENTS 256
+
 typedef struct {
     int fd;
-    dsm_server_config_t cfg;
 } client_thread_arg_t;
+
+typedef struct {
+    pthread_t tid;
+    int fd;
+} client_slot_t;
 
 static void *handle_client_thread(void *arg)
 {
@@ -173,7 +178,6 @@ static void *handle_client_thread(void *arg)
         }
     }
 
-    close(client_fd);
     printf("Client done: served=%lu written=%lu forwarded=%lu\n",
            (unsigned long)pages_served, (unsigned long)pages_written,
            (unsigned long)pages_forwarded);
@@ -212,7 +216,13 @@ int main(int argc, char **argv)
         case 's': ccfg.seed_addr = optarg; break;
         case 'S': ccfg.seed_port = (uint16_t)atoi(optarg); break;
         case 'c': ccfg.cluster_port = (uint16_t)atoi(optarg); break;
-        case 'r': sscanf(optarg, "%u:%u", &ccfg.page_range_start, &ccfg.page_range_end); break;
+        case 'r':
+            if (sscanf(optarg, "%u:%u", &ccfg.page_range_start, &ccfg.page_range_end) != 2) {
+                fprintf(stderr, "Invalid range: %s\n", optarg);
+                print_usage(argv[0]);
+                return 1;
+            }
+            break;
         case 'i': ccfg.node_id = optarg; break;
         case 'h': print_usage(argv[0]); return 0;
         default: print_usage(argv[0]); return 1;
@@ -238,10 +248,12 @@ int main(int argc, char **argv)
         g_cluster = cluster_create(&ccfg, local_addr, cfg.port);
         if (!g_cluster) {
             fprintf(stderr, "Failed to create cluster context\n");
+            munmap(g_storage, storage_size);
             return 1;
         }
         if (cluster_start(g_cluster) < 0) {
             fprintf(stderr, "Failed to start cluster\n");
+            munmap(g_storage, storage_size);
             return 1;
         }
         if (ccfg.seed_addr && cluster_join(g_cluster) < 0) {
@@ -253,7 +265,20 @@ int main(int argc, char **argv)
     if (cfg.verbose) dsm_server_config_print(&cfg);
 
     int listen_fd = start_server(&cfg);
-    if (listen_fd < 0) return 1;
+    if (listen_fd < 0) {
+        munmap(g_storage, storage_size);
+        return 1;
+    }
+
+    size_t slot_cap = MAX_CLIENTS;
+    size_t slot_count = 0;
+    client_slot_t *slots = malloc(slot_cap * sizeof(*slots));
+    if (!slots) {
+        perror("malloc");
+        close(listen_fd);
+        munmap(g_storage, storage_size);
+        return 1;
+    }
 
     while (atomic_load(&running)) {
         struct sockaddr_in client_addr;
@@ -273,18 +298,56 @@ int main(int argc, char **argv)
             printf("Client from %s:%d\n", client_ip, ntohs(client_addr.sin_port));
 
         client_thread_arg_t *cta = malloc(sizeof(*cta));
+        if (!cta) {
+            perror("malloc");
+            close(client_fd);
+            continue;
+        }
         cta->fd = client_fd;
-        cta->cfg = cfg;
+
+        if (slot_count == slot_cap) {
+            /* Reap finished client threads to free slots. */
+            size_t kept = 0;
+            for (size_t i = 0; i < slot_count; i++) {
+                if (pthread_tryjoin_np(slots[i].tid, NULL) == 0)
+                    close(slots[i].fd);
+                else
+                    slots[kept++] = slots[i];
+            }
+            slot_count = kept;
+            if (slot_count == slot_cap) {
+                client_slot_t *grown = realloc(slots, 2 * slot_cap * sizeof(*slots));
+                if (!grown) {
+                    perror("realloc");
+                    close(client_fd);
+                    free(cta);
+                    continue;
+                }
+                slots = grown;
+                slot_cap *= 2;
+            }
+        }
 
         pthread_t tid;
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        pthread_create(&tid, &attr, handle_client_thread, cta);
-        pthread_attr_destroy(&attr);
+        if (pthread_create(&tid, NULL, handle_client_thread, cta) != 0) {
+            perror("pthread_create");
+            close(client_fd);
+            free(cta);
+            continue;
+        }
+        slots[slot_count].tid = tid;
+        slots[slot_count].fd = client_fd;
+        slot_count++;
     }
 
     close(listen_fd);
+    for (size_t i = 0; i < slot_count; i++)
+        shutdown(slots[i].fd, SHUT_RDWR);
+    for (size_t i = 0; i < slot_count; i++) {
+        pthread_join(slots[i].tid, NULL);
+        close(slots[i].fd);
+    }
+    free(slots);
     if (g_cluster) cluster_destroy(g_cluster);
     munmap(g_storage, storage_size);
     printf("Server shutdown\n");
