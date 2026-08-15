@@ -25,29 +25,21 @@ API_OBJ := $(BUILDDIR)/dsm_region.o $(BUILDDIR)/dsm_array.o
 CLUSTER_SRC := $(SRCDIR)/dsm_cluster.c $(SRCDIR)/dsm_gossip.c
 CLUSTER_OBJ := $(BUILDDIR)/dsm_cluster.o $(BUILDDIR)/dsm_gossip.o
 
-# io_uring sources
-URING_SRC := $(SRCDIR)/dsm_uring.c
-URING_OBJ := $(BUILDDIR)/dsm_uring.o
-URING_LDFLAGS := -luring
-
 # Unit test sources
 TEST_SRC := tests/unit_paging.c
 TEST_BIN := $(BUILDDIR)/unit_paging
 
 # Targets
 SERVER   := dsm-server
-SERVER_URING := dsm-server-uring
 CLIENT   := dsm-client
 LIBRARY  := libdsm.so
 
 # Docker-friendly flags (no -march=native for portability)
 DOCKER_CFLAGS := -O3 -flto -fomit-frame-pointer -Wall -Wextra -std=gnu11 -Iinclude
 
-.PHONY: all clean perf debug docker-build docker-run test unit cluster-test e2e-exhaustive install help server client uring lib python
+.PHONY: all clean perf debug docker-build docker-run test unit cluster-test e2e-exhaustive install help server client lib python
 
 all: $(SERVER) $(CLIENT)
-
-uring: $(SERVER_URING) $(CLIENT)
 
 lib: $(LIBRARY)
 
@@ -80,14 +72,7 @@ $(BUILDDIR)/dsm_gossip.o: $(SRCDIR)/dsm_gossip.c $(INCDIR)/dsm_gossip.h $(INCDIR
 $(BUILDDIR)/dsm_server.o: $(SRCDIR)/dsm_server.c $(INCDIR)/dsm_protocol.h $(INCDIR)/dsm_paging.h $(INCDIR)/dsm_config.h $(INCDIR)/dsm_cluster.h | $(BUILDDIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(BUILDDIR)/dsm_server_uring.o: $(SRCDIR)/dsm_server_uring.c $(INCDIR)/dsm_protocol.h $(INCDIR)/dsm_config.h $(INCDIR)/dsm_uring.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) -c -o $@ $<
-
 $(BUILDDIR)/dsm_client.o: $(SRCDIR)/dsm_client.c $(INCDIR)/dsm_protocol.h $(INCDIR)/dsm_paging.h $(INCDIR)/dsm_config.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-# io_uring object
-$(BUILDDIR)/dsm_uring.o: $(SRCDIR)/dsm_uring.c $(INCDIR)/dsm_uring.h $(INCDIR)/dsm_protocol.h | $(BUILDDIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # High-level API objects (for shared library)
@@ -116,11 +101,6 @@ $(LIBRARY): $(API_OBJ) $(BUILDDIR)/dsm_common_pic.o $(BUILDDIR)/dsm_paging_pic.o
 $(SERVER): $(BUILDDIR)/dsm_server.o $(COMMON_OBJ) $(CLUSTER_OBJ)
 	$(CC) $(LDFLAGS) -o $@ $^
 	@echo "Built $(SERVER)"
-
-# Link io_uring server
-$(SERVER_URING): $(BUILDDIR)/dsm_server_uring.o $(COMMON_OBJ) $(CLUSTER_OBJ) $(URING_OBJ)
-	$(CC) $(LDFLAGS) $(URING_LDFLAGS) -o $@ $^
-	@echo "Built $(SERVER_URING) (io_uring enabled)"
 
 # Link client
 $(CLIENT): $(BUILDDIR)/dsm_client.o $(COMMON_OBJ)
@@ -157,7 +137,7 @@ perf: $(CLIENT) $(SERVER)
 	kill $$SERVER_PID 2>/dev/null || true
 
 clean:
-	rm -rf $(BUILDDIR) $(SERVER) $(SERVER_URING) $(CLIENT) $(LIBRARY)
+	rm -rf $(BUILDDIR) $(SERVER) $(CLIENT) $(LIBRARY)
 	rm -f examples/matmul_bench examples/cluster_bench examples/matrix_demo
 
 # Test: end-to-end verify (write, evict, writeback, refetch), then unit tests
@@ -235,7 +215,6 @@ help:
 	@echo "Build Targets:"
 	@echo "  all            - Build server and client (default)"
 	@echo "  lib            - Build shared library (libdsm.so)"
-	@echo "  uring          - Build io_uring server variant"
 	@echo "  debug          - Build with debug symbols and sanitizers"
 	@echo "  clean          - Remove built files"
 	@echo ""

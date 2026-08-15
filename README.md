@@ -81,12 +81,11 @@ Eviction uses the **clock algorithm**: a hand sweeps frames, clearing reference 
 ```sh
 make all           # server + client
 make lib           # shared library (libdsm.so)
-make uring         # io_uring server variant (Linux 5.1+)
 make test          # single-node test
 make cluster-test  # 2-node cluster test
 ```
 
-Requires GCC with C11 support. The io_uring variant requires liburing.
+Requires GCC with C11 support.
 
 ## Usage
 
