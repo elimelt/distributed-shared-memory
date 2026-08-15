@@ -98,50 +98,6 @@ merge_node(cluster_state_t *s, const cluster_node_t *node)
     }
 }
 
-cluster_config_t
-cluster_config_default(void)
-{
-    return (cluster_config_t){
-        .seed_addr = NULL,
-        .seed_port = DEFAULT_PORT + CLUSTER_PORT_OFFSET,
-        .node_id = NULL,
-        .cluster_port = DEFAULT_PORT + CLUSTER_PORT_OFFSET,
-        .heartbeat_ms = HEARTBEAT_INTERVAL_MS,
-        .gossip_ms = GOSSIP_INTERVAL_MS,
-        .timeout_ms = HEARTBEAT_TIMEOUT_MS,
-        .page_range_start = 0,
-        .page_range_end = 0
-    };
-}
-
-int
-cluster_config_from_env(cluster_config_t *cfg)
-{
-    char *v;
-    if ((v = getenv("DSM_SEED_ADDR"))) cfg->seed_addr = v;
-    if ((v = getenv("DSM_SEED_PORT"))) cfg->seed_port = (uint16_t)atoi(v);
-    if ((v = getenv("DSM_NODE_ID"))) cfg->node_id = v;
-    if ((v = getenv("DSM_CLUSTER_PORT"))) cfg->cluster_port = (uint16_t)atoi(v);
-    if ((v = getenv("DSM_HEARTBEAT_MS"))) cfg->heartbeat_ms = (uint32_t)atoi(v);
-    if ((v = getenv("DSM_GOSSIP_MS"))) cfg->gossip_ms = (uint32_t)atoi(v);
-    if ((v = getenv("DSM_TIMEOUT_MS"))) cfg->timeout_ms = (uint32_t)atoi(v);
-    if ((v = getenv("DSM_PAGE_RANGE_START"))) cfg->page_range_start = (uint32_t)atoi(v);
-    if ((v = getenv("DSM_PAGE_RANGE_END"))) cfg->page_range_end = (uint32_t)atoi(v);
-    return 0;
-}
-
-void
-cluster_config_print(const cluster_config_t *cfg)
-{
-    printf("Cluster Configuration:\n");
-    printf("  Seed:          %s:%u\n", cfg->seed_addr ? cfg->seed_addr : "(none)", cfg->seed_port);
-    printf("  Cluster Port:  %u\n", cfg->cluster_port);
-    printf("  Heartbeat:     %u ms\n", cfg->heartbeat_ms);
-    printf("  Gossip:        %u ms\n", cfg->gossip_ms);
-    printf("  Timeout:       %u ms\n", cfg->timeout_ms);
-    printf("  Page Range:    %u - %u\n", cfg->page_range_start, cfg->page_range_end);
-}
-
 cluster_ctx_t *
 cluster_create(const cluster_config_t *cfg, uint32_t local_addr, uint16_t client_port)
 {

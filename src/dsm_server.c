@@ -206,16 +206,18 @@ int main(int argc, char **argv)
         {0, 0, 0, 0}
     };
 
+    dsm_parse_set_usage(print_usage, argv[0]);
+
     int opt;
     while ((opt = getopt_long(argc, argv, "p:b:n:vhs:S:c:r:i:", long_opts, NULL)) != -1) {
         switch (opt) {
-        case 'p': cfg.port = (uint16_t)atoi(optarg); break;
+        case 'p': cfg.port = (uint16_t)dsm_parse_long(optarg, "-p/--port", 1, 65535); break;
         case 'b': cfg.bind_addr = optarg; break;
-        case 'n': cfg.num_virtual_pages = (uint32_t)atoi(optarg); break;
+        case 'n': cfg.num_virtual_pages = (uint32_t)dsm_parse_long(optarg, "-n/--pages", 1, (long)UINT32_MAX); break;
         case 'v': cfg.verbose = true; break;
         case 's': ccfg.seed_addr = optarg; break;
-        case 'S': ccfg.seed_port = (uint16_t)atoi(optarg); break;
-        case 'c': ccfg.cluster_port = (uint16_t)atoi(optarg); break;
+        case 'S': ccfg.seed_port = (uint16_t)dsm_parse_long(optarg, "-S/--seed-port", 1, 65535); break;
+        case 'c': ccfg.cluster_port = (uint16_t)dsm_parse_long(optarg, "-c/--cluster-port", 1, 65535); break;
         case 'r':
             if (sscanf(optarg, "%u:%u", &ccfg.page_range_start, &ccfg.page_range_end) != 2) {
                 fprintf(stderr, "Invalid range: %s\n", optarg);

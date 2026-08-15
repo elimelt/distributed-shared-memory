@@ -55,9 +55,7 @@ typedef struct {
 
 typedef struct cluster_ctx cluster_ctx_t;
 
-cluster_config_t cluster_config_default(void);
-int cluster_config_from_env(cluster_config_t *cfg);
-void cluster_config_print(const cluster_config_t *cfg);
+/* cluster_config_t population and printing live in dsm_config.h. */
 
 cluster_ctx_t *cluster_create(const cluster_config_t *cfg, uint32_t local_addr, uint16_t client_port);
 void cluster_destroy(cluster_ctx_t *ctx);

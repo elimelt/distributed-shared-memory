@@ -220,6 +220,8 @@ int main(int argc, char **argv)
     dsm_client_config_t cfg = dsm_client_config_default();
     dsm_client_config_from_env(&cfg);
 
+    dsm_parse_set_usage(print_usage, argv[0]);
+
     int opt;
     while ((opt = getopt_long(argc, argv, "H:p:n:N:i:l:w:vth", long_options, NULL)) != -1) {
         switch (opt) {
@@ -227,22 +229,22 @@ int main(int argc, char **argv)
             cfg.host = optarg;
             break;
         case 'p':
-            cfg.port = (uint16_t)atoi(optarg);
+            cfg.port = (uint16_t)dsm_parse_long(optarg, "-p/--port", 1, 65535);
             break;
         case 'n':
-            cfg.num_pages = (uint32_t)atoi(optarg);
+            cfg.num_pages = (uint32_t)dsm_parse_long(optarg, "-n/--num-pages", 1, (long)UINT32_MAX);
             break;
         case 'N':
-            cfg.num_virtual_pages = (uint32_t)atoi(optarg);
+            cfg.num_virtual_pages = (uint32_t)dsm_parse_long(optarg, "-N/--num-virtual", 1, (long)UINT32_MAX);
             break;
         case 'i':
-            cfg.num_iterations = (uint32_t)atoi(optarg);
+            cfg.num_iterations = (uint32_t)dsm_parse_long(optarg, "-i/--iterations", 0, (long)UINT32_MAX);
             break;
         case 'l':
-            cfg.locality_percent = (uint8_t)atoi(optarg);
+            cfg.locality_percent = (uint8_t)dsm_parse_long(optarg, "-l/--locality", 0, 100);
             break;
         case 'w':
-            cfg.write_percent = (uint8_t)atoi(optarg);
+            cfg.write_percent = (uint8_t)dsm_parse_long(optarg, "-w/--write-pct", 0, 100);
             break;
         case 'v':
             cfg.verbose = true;

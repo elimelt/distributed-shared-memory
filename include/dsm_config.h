@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "dsm_cluster.h"
+
 typedef struct {
     char *host;
     uint16_t port;
@@ -29,6 +31,19 @@ int dsm_client_config_from_env(dsm_client_config_t *cfg);
 int dsm_server_config_from_env(dsm_server_config_t *cfg);
 void dsm_client_config_print(const dsm_client_config_t *cfg);
 void dsm_server_config_print(const dsm_server_config_t *cfg);
+
+cluster_config_t cluster_config_default(void);
+int cluster_config_from_env(cluster_config_t *cfg);
+void cluster_config_print(const cluster_config_t *cfg);
+
+/* Checked env parsing: warn to stderr and return dflt on bad input. */
+long dsm_env_long(const char *name, long dflt, long min, long max);
+const char *dsm_env_str(const char *name, const char *dflt);
+
+/* Checked CLI parsing: print error (and usage, if registered), exit 1 on
+ * bad input. */
+void dsm_parse_set_usage(void (*usage)(const char *prog), const char *prog);
+long dsm_parse_long(const char *arg, const char *flagname, long min, long max);
 
 #endif /* DSM_CONFIG_H */
 
