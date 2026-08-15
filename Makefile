@@ -30,6 +30,10 @@ URING_SRC := $(SRCDIR)/dsm_uring.c
 URING_OBJ := $(BUILDDIR)/dsm_uring.o
 URING_LDFLAGS := -luring
 
+# Unit test sources
+TEST_SRC := tests/unit_paging.c
+TEST_BIN := $(BUILDDIR)/unit_paging
+
 # Targets
 SERVER   := dsm-server
 SERVER_URING := dsm-server-uring
@@ -39,7 +43,7 @@ LIBRARY  := libdsm.so
 # Docker-friendly flags (no -march=native for portability)
 DOCKER_CFLAGS := -O3 -flto -fomit-frame-pointer -Wall -Wextra -std=gnu11 -Iinclude
 
-.PHONY: all clean perf debug docker-build docker-run test cluster-test e2e-exhaustive install help server client uring lib python
+.PHONY: all clean perf debug docker-build docker-run test unit cluster-test e2e-exhaustive install help server client uring lib python
 
 all: $(SERVER) $(CLIENT)
 
@@ -164,6 +168,13 @@ test: $(SERVER) $(CLIENT)
 	timeout 30 ./$(CLIENT) -H localhost -i 10000 -b || true; \
 	kill $$SERVER_PID 2>/dev/null || true; wait $$SERVER_PID 2>/dev/null || true
 	@echo "Test complete"
+
+# Unit tests: pager tests (in-memory mode, no server needed)
+$(TEST_BIN): $(TEST_SRC) $(COMMON_OBJ) $(INCDIR)/dsm_paging.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ $(TEST_SRC) $(COMMON_OBJ) $(LDFLAGS)
+
+unit: $(TEST_BIN)
+	@./$(TEST_BIN)
 
 # Cluster test: 2-node cluster (30s timeout per client)
 cluster-test: $(SERVER) $(CLIENT)
