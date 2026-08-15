@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Cluster node 1 - pages 0-1023
   node1:
@@ -19,14 +17,10 @@ services:
     networks:
       - dsm-net
     restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 256M
 
   # Cluster node 2 - pages 1024-2047
   node2:
+    build: .
     image: dsm:latest
     container_name: dsm-node2
     environment:
@@ -46,14 +40,10 @@ services:
     networks:
       - dsm-net
     restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 256M
 
   # Cluster node 3 - pages 2048-3071
   node3:
+    build: .
     image: dsm:latest
     container_name: dsm-node3
     environment:
@@ -73,14 +63,10 @@ services:
     networks:
       - dsm-net
     restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 256M
 
-  # Client for benchmarking the cluster
+  # Client for benchmarking the cluster (default client mode is the benchmark)
   client:
+    build: .
     image: dsm:latest
     container_name: dsm-client
     entrypoint: ["/usr/local/bin/dsm-client"]
@@ -91,7 +77,6 @@ services:
       - DSM_LOCALITY_PERCENT=80
       - DSM_WRITE_PERCENT=10
       - DSM_VERBOSE=1
-      - DSM_BENCHMARK=1
     depends_on:
       - node1
       - node2
@@ -101,11 +86,6 @@ services:
     restart: "no"
     profiles:
       - benchmark
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 512M
 
 networks:
   dsm-net:

@@ -5,20 +5,18 @@ CC       := gcc
 CFLAGS   := -O3 -march=native -mtune=native -flto -fomit-frame-pointer
 CFLAGS   += -Wall -Wextra -std=gnu11
 CFLAGS   += -Iinclude
+CFLAGS   += -MMD -MP
 # -Wl,-z,now: Eager binding eliminates lazy symbol resolution overhead (~25% client CPU)
 LDFLAGS  := -pthread -flto -Wl,-z,now
 
 # Source files
 SRCDIR   := src
-INCDIR   := include
 BUILDDIR := build
 
-# Common sources (linked into both binaries)
-COMMON_SRC := $(SRCDIR)/dsm_common.c $(SRCDIR)/dsm_config.c $(SRCDIR)/dsm_paging.c
+# Common objects (linked into both binaries)
 COMMON_OBJ := $(BUILDDIR)/dsm_common.o $(BUILDDIR)/dsm_config.o $(BUILDDIR)/dsm_paging.o
 
-# Cluster sources (server only)
-CLUSTER_SRC := $(SRCDIR)/dsm_cluster.c $(SRCDIR)/dsm_gossip.c
+# Cluster objects (server only)
 CLUSTER_OBJ := $(BUILDDIR)/dsm_cluster.o $(BUILDDIR)/dsm_gossip.o
 
 # Unit test sources
@@ -32,10 +30,15 @@ SERVER   := dsm-server
 CLIENT   := dsm-client
 LIBRARY  := libdsm.so
 
-# Docker-friendly flags (no -march=native for portability)
-DOCKER_CFLAGS := -O3 -flto -fomit-frame-pointer -Wall -Wextra -std=gnu11 -Iinclude
+# Install prefix
+PREFIX  ?= /usr/local
 
-.PHONY: all clean perf debug docker-build docker-run test unit cluster-test install help server client lib python python-test
+# Docker-friendly flags (no -march=native for portability)
+DOCKER_CFLAGS := -O3 -flto -fomit-frame-pointer -Wall -Wextra -std=gnu11 -Iinclude -MMD -MP
+
+.PHONY: all server client lib python debug perf test unit python-test \
+        cluster-test docker docker-build docker-run cluster-docker \
+        clean install help
 
 all: $(SERVER) $(CLIENT)
 
@@ -50,38 +53,13 @@ python: $(LIBRARY)
 $(BUILDDIR):
 	@mkdir -p $(BUILDDIR)
 
-# Compile common objects
-$(BUILDDIR)/dsm_common.o: $(SRCDIR)/dsm_common.c $(INCDIR)/dsm_protocol.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-$(BUILDDIR)/dsm_config.o: $(SRCDIR)/dsm_config.c $(INCDIR)/dsm_config.h $(INCDIR)/dsm_protocol.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-$(BUILDDIR)/dsm_paging.o: $(SRCDIR)/dsm_paging.c $(INCDIR)/dsm_paging.h $(INCDIR)/dsm_protocol.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-# Compile cluster objects
-$(BUILDDIR)/dsm_cluster.o: $(SRCDIR)/dsm_cluster.c $(INCDIR)/dsm_cluster.h $(INCDIR)/dsm_gossip.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-$(BUILDDIR)/dsm_gossip.o: $(SRCDIR)/dsm_gossip.c $(INCDIR)/dsm_gossip.h $(INCDIR)/dsm_cluster.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-$(BUILDDIR)/dsm_server.o: $(SRCDIR)/dsm_server.c $(INCDIR)/dsm_protocol.h $(INCDIR)/dsm_paging.h $(INCDIR)/dsm_config.h $(INCDIR)/dsm_cluster.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-$(BUILDDIR)/dsm_client.o: $(SRCDIR)/dsm_client.c $(INCDIR)/dsm_protocol.h $(INCDIR)/dsm_paging.h $(INCDIR)/dsm_config.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-# PIC versions of common objects for shared library
-$(BUILDDIR)/dsm_common_pic.o: $(SRCDIR)/dsm_common.c $(INCDIR)/dsm_protocol.h | $(BUILDDIR)
+# PIC objects for the shared library
+$(BUILDDIR)/%_pic.o: $(SRCDIR)/%.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) -fPIC -c -o $@ $<
 
-$(BUILDDIR)/dsm_paging_pic.o: $(SRCDIR)/dsm_paging.c $(INCDIR)/dsm_paging.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) -fPIC -c -o $@ $<
-
-$(BUILDDIR)/dsm_config_pic.o: $(SRCDIR)/dsm_config.c $(INCDIR)/dsm_config.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) -fPIC -c -o $@ $<
+# Regular objects; header deps come from -MMD -MP .d files
+$(BUILDDIR)/%.o: $(SRCDIR)/%.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 # Shared library for Python bindings
 $(LIBRARY): $(BUILDDIR)/dsm_common_pic.o $(BUILDDIR)/dsm_paging_pic.o $(BUILDDIR)/dsm_config_pic.o
@@ -108,7 +86,7 @@ docker: clean all
 	@echo "Built for Docker with portable flags"
 
 # Debug build
-debug: CFLAGS := -O0 -g -Wall -Wextra -std=gnu11 -Iinclude -fsanitize=address,undefined
+debug: CFLAGS := -O0 -g -Wall -Wextra -std=gnu11 -Iinclude -MMD -MP -fsanitize=address,undefined
 debug: LDFLAGS := -pthread -fsanitize=address,undefined
 debug: clean all
 	@echo "Built with debug symbols and sanitizers"
@@ -136,11 +114,11 @@ test: $(SERVER) $(CLIENT)
 	@echo "Test complete"
 
 # Unit tests: pager tests (in-memory mode, no server needed)
-$(TEST_BIN): $(TEST_SRC) $(COMMON_OBJ) $(INCDIR)/dsm_paging.h | $(BUILDDIR)
+$(TEST_BIN): $(TEST_SRC) $(COMMON_OBJ) | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ $(TEST_SRC) $(COMMON_OBJ) $(LDFLAGS)
 
 # Unit tests: gossip message encode/parse
-$(GOSSIP_TEST_BIN): $(GOSSIP_TEST_SRC) $(BUILDDIR)/dsm_gossip.o $(INCDIR)/dsm_gossip.h $(INCDIR)/dsm_cluster.h | $(BUILDDIR)
+$(GOSSIP_TEST_BIN): $(GOSSIP_TEST_SRC) $(BUILDDIR)/dsm_gossip.o | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ $(GOSSIP_TEST_SRC) $(BUILDDIR)/dsm_gossip.o $(LDFLAGS)
 
 unit: $(TEST_BIN) $(GOSSIP_TEST_BIN)
@@ -159,7 +137,6 @@ python-test: $(SERVER) $(LIBRARY)
 # Cluster test: 2-node cluster (30s timeout per client)
 cluster-test: $(SERVER) $(CLIENT)
 	@echo "=== Starting 2-node DSM cluster test ==="
-	@pkill -9 dsm-server 2>/dev/null || true; sleep 1
 	@./$(SERVER) -p 9001 -c 10001 -r 0:1024 -n 1024 & PID1=$$!; \
 	sleep 1; \
 	./$(SERVER) -p 9002 -c 10002 -r 1024:2048 -n 1024 -s localhost -S 10001 & PID2=$$!; \
@@ -173,36 +150,52 @@ cluster-test: $(SERVER) $(CLIENT)
 
 # Docker cluster test
 cluster-docker: docker-build
-	docker-compose -f docker-compose.yaml up --scale client=0 -d
+	docker compose -f docker-compose.yaml up -d
 	@sleep 3
-	docker-compose run --rm client -H node1 -v -i 10000
-	docker-compose down
+	docker compose run --rm client -H node1 -v -i 10000
+	docker compose down
 
 # Docker targets
 docker-build:
 	docker build -t dsm:latest .
 
 docker-run:
-	docker-compose up
+	docker compose up
 
 # Install both binaries
 install: $(SERVER) $(CLIENT)
-	install -m 755 $(SERVER) /usr/local/bin/
-	install -m 755 $(CLIENT) /usr/local/bin/
+	install -d $(PREFIX)/bin
+	install -m 755 $(SERVER) $(PREFIX)/bin/
+	install -m 755 $(CLIENT) $(PREFIX)/bin/
 
 help:
 	@echo "DSM (Distributed Shared Memory) Build System"
 	@echo ""
 	@echo "Build Targets:"
 	@echo "  all            - Build server and client (default)"
+	@echo "  server         - Build dsm-server"
+	@echo "  client         - Build dsm-client"
 	@echo "  lib            - Build shared library (libdsm.so)"
-	@echo "  debug          - Build with debug symbols and sanitizers"
+	@echo "  python         - Build libdsm.so and print Python usage"
+	@echo "  debug          - Rebuild with debug symbols and sanitizers"
+	@echo "  docker         - Rebuild with portable flags (no -march=native)"
 	@echo "  clean          - Remove built files"
 	@echo ""
 	@echo "Test Targets:"
-	@echo "  test           - Single server/client test (30s timeout)"
-	@echo "  cluster-test   - 2-node cluster test (30s timeout)"
+	@echo "  test           - End-to-end verify test, then unit tests"
+	@echo "  unit           - Unit tests (paging, gossip)"
+	@echo "  python-test    - Python binding end-to-end test"
+	@echo "  cluster-test   - 2-node cluster test"
+	@echo "  perf           - Run client under perf stat against a local server"
 	@echo ""
 	@echo "Docker Targets:"
-	@echo "  docker-build   - Build Docker image"
-	@echo "  docker-run     - Run with docker-compose"
+	@echo "  docker-build   - Build Docker image (dsm:latest)"
+	@echo "  docker-run     - Start the cluster with docker compose"
+	@echo "  cluster-docker - Run cluster benchmark via docker compose"
+	@echo ""
+	@echo "Other Targets:"
+	@echo "  install        - Install binaries to PREFIX/bin (default /usr/local)"
+	@echo "  help           - Show this message"
+
+# Auto-generated header dependencies
+-include $(wildcard $(BUILDDIR)/*.d)

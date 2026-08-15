@@ -1,99 +1,126 @@
 # Distributed Shared Memory over TCP
 
-A page-based distributed shared memory engine that presents a unified virtual address space across multiple machines. Clients access remote memory through a local page cache with transparent fault handling, writeback, and prefetching.
+A page-based distributed shared memory engine. Servers export a virtual address space of 4 KiB pages. Clients access it through a local page cache with transparent fault handling, writeback, and prefetching.
 
-This is not intended for workloads where low-latency random access is critical. Network round-trip latency dominates performance. Rather, you should consider this for scenarios where:
+Network round-trip latency dominates performance. This is not for latency-critical random access. Consider it when:
 
-- You have a relatively large working set that can be partitioned across nodes
-- You have a streaming access pattern 
-- You are running commodity hardware and don't have access to something like Infiniband that supports low-latency RDMA, but still need to allocate memory across nodes
+- Your working set is large and can be partitioned across nodes.
+- Your access pattern is streaming or sequential.
+- You run commodity hardware without RDMA, but need memory across nodes.
 
-Similarly, this is not intended for multi-client workloads where coherence is required. See [Consistency Model](#consistency-model) for more details. 
+It is also not for multi-client workloads that need coherence. See [Consistency Model](#consistency-model).
+
+Linux only. The server uses Linux-specific APIs. On other platforms, use the Docker workflow below.
 
 ## Architecture
 
-The system consists of two layers:
+Two layers:
 
-1. **Page API** (`dsm_paging.h`, C) -- Low-level page fault handling with clock-based eviction
-2. **Array API** (`python/dsm.py`, Python only) -- Multi-dimensional typed arrays with strided indexing, built on the Page API via `libdsm.so`
+1. **Page API** (`include/dsm_paging.h`, C): page cache with fault handling and clock-based eviction, exported by `libdsm.so`.
+2. **Array API** (`python/dsm.py`, Python only): N-dimensional typed arrays with strided indexing, built on the Page API via `ctypes`.
 
-Clients maintain a local page cache. On access, if the page is present and valid, the access completes locally. Otherwise, the client fetches the page from the server (or forwards the request to the owning node in a cluster). Dirty pages are written back on eviction.
+The client keeps a local page cache. A valid cached page is served locally. Otherwise the client fetches the page from its server. Dirty pages are written back on eviction.
 
 ### Clustering
 
-Multiple servers form a cluster using a gossip protocol over UDP. Each node owns a disjoint range of pages. When a client requests a page not owned by its connected server, the request is forwarded to the correct owner. Node membership is disseminated via periodic heartbeats and SWIM-style failure detection.
+Multiple servers form a cluster over a UDP gossip protocol. Each node owns a disjoint page range. Request forwarding is server-side: the client connects to one server and stays cluster-unaware. When a client asks its server for a page another node owns, the server forwards the request to the owner and relays the reply.
+
+Failure detection uses heartbeat timeout aging. Each node tracks when it last heard from each peer. A peer silent for half the timeout moves from `ALIVE` to `SUSPECT`. A peer silent past the full timeout moves to `DEAD`. Defaults: 1000 ms heartbeat, 3000 ms timeout, 500 ms gossip interval.
 
 ## Wire Protocol
 
-All communication uses TCP with `TCP_NODELAY`. Messages are fixed-size for predictable parsing.
-
-### RPC Header (8 bytes)
+Client-server communication uses TCP with `TCP_NODELAY`. Every request starts with a fixed 8-byte header:
 
 ```
-+---------+----------+-------------+
-| op (1B) | pad (3B) | page_id(4B) |
-+---------+----------+-------------+
++---------+----------+--------------+
+| op (1B) | pad (3B) | page_id (4B) |
++---------+----------+--------------+
 ```
 
-**Operations:**
-- `OP_GET_PAGE (1)` -- Request page data; server responds with 4096 bytes
-- `OP_PUT_PAGE (2)` -- Write page; followed by 4096 bytes of data
-- `OP_ACK (3)` -- Acknowledge write completion
+Operations (`include/dsm_protocol.h`):
+
+- `OP_GET_PAGE (1)`: request a page. The server replies with the raw 4096 bytes of page data.
+- `OP_PUT_PAGE (2)`: write a page. 4096 bytes of data follow the header. The server acknowledges the write with an `OP_ACK` header.
+- `OP_ACK (3)`: server-to-client acknowledgment of a completed `OP_PUT_PAGE`.
+
+Page ids are `uint32_t`. `UINT32_MAX` is reserved as the no-page sentinel, so the address space can hold up to 2^32 - 1 pages.
 
 ### Gossip Protocol (UDP)
 
-Cluster nodes communicate membership via gossip messages:
+Cluster nodes exchange membership via gossip messages. Each message has a header (magic `0x44534D47`, type, node count, sender id, incarnation, client port, page range) plus up to 16 node entries. Each entry carries address, ports, page range, incarnation, and liveness state.
 
-```
-+-------------+------+------------+-----------------+---------------------+
-| magic (4B)  |type  | node_count | sender_id (16B) | sender_range (8B)   |
-| 0x44534D47  |(1B)  | (1B)       |                 | start:end           |
-+-------------+------+------------+-----------------+---------------------+
-```
-
-Message types: `PING`, `PONG`, `JOIN`, `JOIN_ACK`, `SYNC`, `LEAVE`
-
-Each message includes up to 16 node entries with address, port, page range, incarnation number, and liveness state.
+Message types: `PING`, `PONG`, `JOIN`.
 
 ## Page Table Implementation
 
 The client maintains:
-- **Page table**: Maps virtual page numbers to local frames (8 bytes/entry)
-- **Frame table**: Maps frames to the virtual page they hold
-- **Free list**: Stack of available frames
 
-Eviction uses the **clock algorithm**: a hand sweeps frames, clearing reference bits. Pages without a reference bit set are evicted. Dirty remote pages are written back before eviction.
+- **Page table**: maps virtual page numbers to local frames (8 bytes per entry).
+- **Frame table**: maps frames to the virtual page they hold.
+- **Free list**: stack of available frames.
+
+Eviction uses the **clock algorithm**. A hand sweeps frames and clears reference bits. A page without its reference bit set is evicted. Dirty remote pages are written back first.
 
 ### Page Table Entry (8 bytes, packed)
 
-| Field        | Size | Description                           |
-|--------------|------|---------------------------------------|
-| frame_number | 2B   | Local frame index                     |
-| valid        | 1B   | Page present in local cache           |
-| reference_bit| 1B   | Accessed since last clock sweep       |
-| dirty        | 1B   | Modified since fetch                  |
-| location     | 1B   | INVALID / LOCAL / REMOTE              |
-| pad          | 2B   | Alignment                             |
+| Field         | Size | Description                     |
+|---------------|------|---------------------------------|
+| frame_number  | 4B   | Local frame index               |
+| valid         | 1B   | Page present in local cache     |
+| reference_bit | 1B   | Accessed since last clock sweep |
+| dirty         | 1B   | Modified since fetch            |
+| location      | 1B   | LOC_LOCAL / LOC_REMOTE          |
 
 ## Building
 
+Requires Linux and GCC with C11 support. On macOS or Windows, build and test inside Docker:
+
 ```sh
-make all           # server + client
-make lib           # shared library (libdsm.so)
-make test          # single-node test
-make cluster-test  # 2-node cluster test
+# Build the dev image (gcc + python3)
+docker build --target builder -t dsm-build .
+
+# Run any make target against your working tree
+docker run --rm -v "$PWD":/w -w /w dsm-build make test
+docker run --rm -v "$PWD":/w -w /w dsm-build make python-test
+
+# Build the full runtime image
+docker build -t dsm:latest .
 ```
 
-Requires GCC with C11 support.
+Make targets (see `make help`):
+
+| Target           | Description                                          |
+|------------------|------------------------------------------------------|
+| `all`            | Build `dsm-server` and `dsm-client` (default)        |
+| `server`         | Build `dsm-server`                                   |
+| `client`         | Build `dsm-client`                                   |
+| `lib`            | Build the shared library `libdsm.so`                 |
+| `python`         | Build `libdsm.so` and print Python usage             |
+| `debug`          | Rebuild with debug symbols and sanitizers            |
+| `docker`         | Rebuild with portable flags (no `-march=native`)     |
+| `perf`           | Run the client under `perf stat`                     |
+| `test`           | End-to-end verify test, then unit tests              |
+| `unit`           | Unit tests (paging, gossip)                          |
+| `python-test`    | Python binding end-to-end test                       |
+| `cluster-test`   | 2-node cluster test                                  |
+| `docker-build`   | Build the Docker image `dsm:latest`                  |
+| `docker-run`     | Start the 3-node cluster with `docker compose`       |
+| `cluster-docker` | Run the cluster benchmark via `docker compose`       |
+| `clean`          | Remove built files                                   |
+| `install`        | Install binaries to `PREFIX/bin` (default `/usr/local`) |
+| `help`           | List targets                                         |
 
 ## Usage
 
 ### Single Server
 
 ```sh
-./dsm-server -p 9999 -n 4096    # 4096 virtual pages
-./dsm-client -H localhost -p 9999 -i 10000
+./dsm-server -p 9999 -n 4096          # serve 4096 virtual pages
+./dsm-client -H localhost -p 9999 -i 10000   # run the benchmark
+./dsm-client -H localhost --verify           # round-trip verification
 ```
+
+The client runs a synthetic benchmark by default. `-h` on either binary lists all flags.
 
 ### Cluster (3 nodes)
 
@@ -108,50 +135,110 @@ Requires GCC with C11 support.
 ./dsm-server -p 9003 -c 10003 -r 2048:3072 -n 3072 -s localhost -S 10001
 ```
 
-### Python API
+Clients connect to any one node. The server forwards requests for pages it does not own.
+
+Or run the 3-node cluster in containers: `make docker-run` (uses `docker-compose.yaml`).
+
+## C API
+
+The Page API lives in `include/dsm_paging.h`. You provide a connected TCP socket (see `connect(2)`; the reference client is `src/dsm_client.c`).
+
+```c
+#include <stdio.h>
+#include <string.h>
+#include "dsm_paging.h"
+
+void example(int server_fd)  /* TCP socket connected to dsm-server */
+{
+    /* 256 local frames caching a 4096-page virtual space */
+    dsm_context_t *ctx = dsm_create_context(256, 4096);
+    dsm_context_set_socket(ctx, server_fd);
+
+    /* Write to page 7 */
+    char *p = dsm_access_page(ctx, (uint32_t)7, 1 /* write */);
+    strcpy(p, "hello");
+
+    /* Hint that pages 8..11 will be needed soon */
+    dsm_prefetch_pages(ctx, 8, 4);
+
+    /* Read page 7 back */
+    p = dsm_access_page(ctx, (uint32_t)7, 0);
+    printf("%s\n", p);
+
+    uint64_t hits, fetches, evictions;
+    dsm_context_get_stats(ctx, &hits, &fetches, &evictions);
+    printf("hits=%llu fetches=%llu evictions=%llu\n",
+           (unsigned long long)hits, (unsigned long long)fetches,
+           (unsigned long long)evictions);
+
+    dsm_destroy_context(ctx);
+}
+```
+
+For raw page RPCs without the cache, `include/dsm_protocol.h` exports `dsm_rpc_get(fd, page_id, buf)` and `dsm_rpc_put(fd, page_id, buf)`.
+
+## Python API
+
+`python/dsm.py` wraps `libdsm.so` (build it with `make lib`; set `DSM_LIB` if the library is not at the repo root). `Context` manages the connection. `Array` allocates pages from the context, so two arrays never overlap.
 
 ```python
 import dsm
 
-ctx = dsm.Context("localhost", 9999, num_pages=256, num_virtual_pages=1024)
-arr = dsm.Array(ctx, shape=(1000, 1000), dtype=dsm.float64)
+with dsm.Context("localhost", 9999, local_pages=256, virtual_pages=4096) as ctx:
+    a = dsm.Array(ctx, shape=(1000, 1000), dtype=dsm.float64)
+    b = dsm.Array(ctx, shape=(100,), dtype=dsm.int32)   # separate pages from a
 
-arr[50, 100] = 3.14
-print(arr[50, 100])
-print(ctx.stats())
+    a[50, 100] = 3.14
+    print(a[50, 100])
+    print(ctx.stats)   # property: {'local_hits': ..., 'remote_fetches': ..., 'evictions': ...}
 ```
 
-## Performance Characteristics
+`dsm.to_numpy(arr)` and `dsm.from_numpy(ctx, np_arr)` convert to and from NumPy arrays.
 
-The dominant cost is network round-trip latency for page faults. With a local cache hit rate above 90%, DSM overhead approaches 1x compared to raw memory for sequential access patterns.
+## Configuration
 
-**Measured on localhost (3.5 GHz, TCP loopback):**
+Both binaries read defaults, then environment variables, then CLI flags. CLI flags win. All numeric values are range-checked: a bad CLI value exits with usage, a bad environment value logs a warning and keeps the default.
 
-| Access Pattern       | Cache Size | Overhead vs Raw Memory |
-|---------------------|------------|------------------------|
-| Sequential read     | Large      | ~1.2x                  |
-| Sequential read     | Small      | ~4x (eviction cost)    |
-| Random read         | Large      | ~8x                    |
-| Random read         | Small      | ~25x                   |
+Environment variables (parsed in `src/dsm_config.c`):
 
-The prefetcher issues batched requests for sequential patterns, amortizing round-trip latency across multiple pages. Batch size is configurable via `ctx->prefetch_count`.
+| Variable | Used by | Meaning |
+|----------|---------|---------|
+| `DSM_HOST` | client | Server hostname |
+| `DSM_PORT` | both | Server TCP port |
+| `DSM_BIND_ADDR` | server | Bind address (default `0.0.0.0`) |
+| `DSM_NUM_PAGES` | client | Local cache size in pages |
+| `DSM_NUM_VIRTUAL_PAGES` | both | Total virtual pages |
+| `DSM_NUM_ITERATIONS` | client | Benchmark iterations |
+| `DSM_LOCALITY_PERCENT` | client | Benchmark locality (0-100) |
+| `DSM_WRITE_PERCENT` | client | Benchmark write ratio (0-100) |
+| `DSM_VERBOSE` | both | Set to `1` for verbose logs |
+| `DSM_VERIFY` | client | Set to `1` for verify mode |
+| `DSM_SEED_ADDR` | server | Seed node address to join |
+| `DSM_SEED_PORT` | server | Seed node cluster port |
+| `DSM_NODE_ID` | server | Node identifier |
+| `DSM_CLUSTER_PORT` | server | This node's cluster (UDP) port |
+| `DSM_HEARTBEAT_MS` | server | Heartbeat interval |
+| `DSM_GOSSIP_MS` | server | Gossip interval |
+| `DSM_TIMEOUT_MS` | server | Failure detection timeout |
+| `DSM_PAGE_RANGE_START` | server | First page this node owns |
+| `DSM_PAGE_RANGE_END` | server | One past the last page this node owns |
 
-### Tuning
+## Testing
 
-- **Local cache size** (`num_pages`): Larger caches reduce evictions. Size to fit working set.
-- **Prefetch count**: Sequential workloads benefit from 4-8 pages. Random access should disable prefetch.
-- **TCP_NODELAY**: Always enabled. Reduces latency at the cost of bandwidth efficiency.
-- **Socket buffers**: Larger buffers (via `SO_RCVBUF`/`SO_SNDBUF`) improve throughput for batch operations.
+- `make test`: starts a server, runs the client in verify mode (write, evict, writeback, refetch), then runs the unit tests.
+- `make unit`: paging and gossip unit tests. No server needed.
+- `make python-test`: end-to-end test of the Python bindings against a live server.
+- `make cluster-test`: 2-node cluster benchmark with server-side forwarding.
 
 ## Consistency Model
 
-This implementation provides **no coherence protocol**. Each client operates on its local cache independently. If multiple clients write to the same page:
+There is **no coherence protocol**. Each client operates on its local cache independently. If multiple clients write the same page:
 
-- Last writer wins (based on writeback order)
-- No read-your-writes guarantee across clients
-- No atomicity for multi-page operations
+- Last writer wins, based on writeback order.
+- No read-your-writes guarantee across clients.
+- No atomicity for multi-page operations.
 
-For applications requiring stronger consistency, implement locking at the application layer or use this system only for read-mostly workloads with partitioned writes.
+If you need stronger consistency, add locking at the application layer, or use this system for read-mostly workloads with partitioned writes.
 
 ## License
 
