@@ -52,12 +52,12 @@ int dsm_client_config_from_env(dsm_client_config_t *cfg)
 
     val = getenv("DSM_NUM_PAGES");
     if (val) {
-        cfg->num_pages = (uint16_t)atoi(val);
+        cfg->num_pages = (uint32_t)atoi(val);
     }
 
     val = getenv("DSM_NUM_VIRTUAL_PAGES");
     if (val) {
-        cfg->num_virtual_pages = (uint16_t)atoi(val);
+        cfg->num_virtual_pages = (uint32_t)atoi(val);
     }
 
     val = getenv("DSM_NUM_ITERATIONS");
@@ -103,7 +103,7 @@ int dsm_server_config_from_env(dsm_server_config_t *cfg)
 
     val = getenv("DSM_NUM_VIRTUAL_PAGES");
     if (val) {
-        cfg->num_virtual_pages = (uint16_t)atoi(val);
+        cfg->num_virtual_pages = (uint32_t)atoi(val);
     }
 
     val = getenv("DSM_VERBOSE");

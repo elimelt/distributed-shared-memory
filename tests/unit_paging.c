@@ -129,7 +129,7 @@ static void test_destroy_populated_context(void)
         assert(p != NULL);
         memset(p, (int)(page + 1), PAGE_SIZE);
     }
-    assert(ctx->free_frame_count == 0);
+    assert(ctx->free_list_top == 0);
 
     dsm_destroy_context(ctx);
     printf("PASS test_destroy_populated_context\n");

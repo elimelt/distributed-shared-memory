@@ -7,8 +7,8 @@
 typedef struct {
     char *host;
     uint16_t port;
-    uint16_t num_pages;
-    uint16_t num_virtual_pages;
+    uint32_t num_pages;
+    uint32_t num_virtual_pages;
     uint32_t num_iterations;
     uint8_t locality_percent;
     uint8_t write_percent;
@@ -18,7 +18,7 @@ typedef struct {
 
 typedef struct {
     uint16_t port;
-    uint16_t num_virtual_pages;
+    uint32_t num_virtual_pages;
     bool verbose;
     char *bind_addr;
 } dsm_server_config_t;

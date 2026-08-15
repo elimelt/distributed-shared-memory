@@ -101,7 +101,7 @@ static void run_benchmark(dsm_context_t *ctx, const dsm_client_config_t *cfg)
            cfg->num_iterations, cfg->locality_percent, cfg->write_percent);
     printf("---------------------\n");
 
-    for (uint16_t i = 0; i < cfg->num_virtual_pages; i++) {
+    for (uint32_t i = 0; i < cfg->num_virtual_pages; i++) {
         ctx->page_table[i].location = (i < cfg->num_pages) ? LOC_LOCAL : LOC_REMOTE;
     }
 
@@ -112,7 +112,7 @@ static void run_benchmark(dsm_context_t *ctx, const dsm_client_config_t *cfg)
         lcg_state = lcg_state * 1103515245 + 12345;
         uint32_t rand_val = (lcg_state >> 16) & 0x7FFF;
 
-        uint16_t page_id;
+        uint32_t page_id;
         if ((rand_val % 100) < cfg->locality_percent) {
             page_id = rand_val % cfg->num_pages;
         } else {
@@ -160,7 +160,7 @@ static int run_verify(dsm_context_t *ctx, const dsm_client_config_t *cfg)
     /* Pass 1: fill every virtual page with a page-dependent pattern.
      * num_virtual_pages > num_pages forces eviction and writeback. */
     for (uint32_t p = 0; p < cfg->num_virtual_pages; p++) {
-        uint8_t *ptr = dsm_access_page(ctx, (uint16_t)p, 1);
+        uint8_t *ptr = dsm_access_page(ctx, p, 1);
         if (!ptr) {
             fprintf(stderr, "VERIFY FAILED: cannot access page %u for write\n", p);
             return 1;
@@ -171,7 +171,7 @@ static int run_verify(dsm_context_t *ctx, const dsm_client_config_t *cfg)
 
     /* Pass 2: re-read every page and compare against the pattern. */
     for (uint32_t p = 0; p < cfg->num_virtual_pages; p++) {
-        uint8_t *ptr = dsm_access_page(ctx, (uint16_t)p, 0);
+        uint8_t *ptr = dsm_access_page(ctx, p, 0);
         if (!ptr) {
             fprintf(stderr, "VERIFY FAILED: cannot access page %u for read\n", p);
             return 1;
@@ -217,10 +217,10 @@ int main(int argc, char **argv)
             cfg.port = (uint16_t)atoi(optarg);
             break;
         case 'n':
-            cfg.num_pages = (uint16_t)atoi(optarg);
+            cfg.num_pages = (uint32_t)atoi(optarg);
             break;
         case 'N':
-            cfg.num_virtual_pages = (uint16_t)atoi(optarg);
+            cfg.num_virtual_pages = (uint32_t)atoi(optarg);
             break;
         case 'i':
             cfg.num_iterations = (uint32_t)atoi(optarg);
@@ -249,7 +249,7 @@ int main(int argc, char **argv)
     if (cfg.verify_mode) {
         /* Force a virtual range 4x the local cache so verification
          * exercises eviction, writeback, and refetch. */
-        cfg.num_virtual_pages = (uint16_t)(4u * cfg.num_pages);
+        cfg.num_virtual_pages = 4u * cfg.num_pages;
     }
 
     if (cfg.locality_percent > 100) {

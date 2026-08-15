@@ -207,7 +207,7 @@ int main(int argc, char **argv)
         switch (opt) {
         case 'p': cfg.port = (uint16_t)atoi(optarg); break;
         case 'b': cfg.bind_addr = optarg; break;
-        case 'n': cfg.num_virtual_pages = (uint16_t)atoi(optarg); break;
+        case 'n': cfg.num_virtual_pages = (uint32_t)atoi(optarg); break;
         case 'v': cfg.verbose = true; break;
         case 's': ccfg.seed_addr = optarg; break;
         case 'S': ccfg.seed_port = (uint16_t)atoi(optarg); break;
