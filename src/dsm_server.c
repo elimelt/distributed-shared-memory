@@ -16,9 +16,9 @@
 #include <ifaddrs.h>
 
 #include "dsm_protocol.h"
-#include "dsm_paging.h"
 #include "dsm_config.h"
 #include "dsm_cluster.h"
+#include "dsm_log.h"
 
 static atomic_int running = 1;
 static cluster_ctx_t *g_cluster = NULL;
@@ -73,13 +73,13 @@ static int start_server(const dsm_server_config_t *cfg)
 {
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd < 0) {
-        perror("socket");
+        DSM_LOG_ERROR("socket: %s", strerror(errno));
         return -1;
     }
 
     int opt = 1;
     if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        perror("setsockopt SO_REUSEADDR");
+        DSM_LOG_ERROR("setsockopt SO_REUSEADDR: %s", strerror(errno));
         close(listen_fd);
         return -1;
     }
@@ -92,31 +92,37 @@ static int start_server(const dsm_server_config_t *cfg)
     addr.sin_family = AF_INET;
     addr.sin_port = htons(cfg->port);
     if (inet_pton(AF_INET, cfg->bind_addr, &addr.sin_addr) <= 0) {
-        fprintf(stderr, "Invalid bind address: %s\n", cfg->bind_addr);
+        DSM_LOG_ERROR("Invalid bind address: %s", cfg->bind_addr);
         close(listen_fd);
         return -1;
     }
 
     if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("bind");
+        DSM_LOG_ERROR("bind: %s", strerror(errno));
         close(listen_fd);
         return -1;
     }
 
     if (listen(listen_fd, 128) < 0) {
-        perror("listen");
+        DSM_LOG_ERROR("listen: %s", strerror(errno));
         close(listen_fd);
         return -1;
     }
 
-    printf("DSM Server listening on %s:%d\n", cfg->bind_addr, cfg->port);
+    DSM_LOG_INFO("DSM Server listening on %s:%d", cfg->bind_addr, cfg->port);
     return listen_fd;
 }
 
+#define MAX_CLIENTS 256
+
 typedef struct {
     int fd;
-    dsm_server_config_t cfg;
 } client_thread_arg_t;
+
+typedef struct {
+    pthread_t tid;
+    int fd;
+} client_slot_t;
 
 static void *handle_client_thread(void *arg)
 {
@@ -127,7 +133,7 @@ static void *handle_client_thread(void *arg)
     static uint8_t zero_page[PAGE_SIZE] __attribute__((aligned(64)));
 
     while (atomic_load_explicit(&running, memory_order_relaxed)) {
-        dsm_rpc_header req;
+        dsm_rpc_header_t req;
         if (__builtin_expect(dsm_recv_full(client_fd, &req, sizeof(req)) < 0, 0))
             break;
 
@@ -137,18 +143,18 @@ static void *handle_client_thread(void *arg)
             if (__builtin_expect(is_local && req.page_id < g_storage_pages, 1)) {
                 void *data = g_storage + ((size_t)req.page_id * PAGE_SIZE);
                 __builtin_prefetch(data + PAGE_SIZE, 0, 1);
-                if (dsm_send_full(client_fd, data, PAGE_SIZE) < 0) break;
+                if (dsm_send_full(client_fd, data, PAGE_SIZE, 0) < 0) break;
                 pages_served++;
             } else if (g_cluster) {
                 if (cluster_forward_get(g_cluster, req.page_id, page_buf) == 0) {
                     pages_forwarded++;
                 } else {
-                    if (dsm_send_full(client_fd, zero_page, PAGE_SIZE) < 0) break;
+                    if (dsm_send_full(client_fd, zero_page, PAGE_SIZE, 0) < 0) break;
                     continue;
                 }
-                if (dsm_send_full(client_fd, page_buf, PAGE_SIZE) < 0) break;
+                if (dsm_send_full(client_fd, page_buf, PAGE_SIZE, 0) < 0) break;
             } else {
-                if (dsm_send_full(client_fd, zero_page, PAGE_SIZE) < 0) break;
+                if (dsm_send_full(client_fd, zero_page, PAGE_SIZE, 0) < 0) break;
             }
         } else if (req.op == OP_PUT_PAGE) {
             if (dsm_recv_full(client_fd, page_buf, PAGE_SIZE) < 0)
@@ -159,16 +165,23 @@ static void *handle_client_thread(void *arg)
                 memcpy(dest, page_buf, PAGE_SIZE);
                 pages_written++;
             } else if (g_cluster) {
-                cluster_forward_put(g_cluster, req.page_id, page_buf);
+                /* ACK only a successful forward; failure is fatal for
+                 * this client connection */
+                if (cluster_forward_put(g_cluster, req.page_id, page_buf) < 0)
+                    break;
                 pages_forwarded++;
+            } else {
+                break;
             }
+
+            dsm_rpc_header_t ack = dsm_rpc_make_header(OP_ACK, req.page_id);
+            if (dsm_send_full(client_fd, &ack, sizeof(ack), 0) < 0) break;
         }
     }
 
-    close(client_fd);
-    printf("Client done: served=%lu written=%lu forwarded=%lu\n",
-           (unsigned long)pages_served, (unsigned long)pages_written,
-           (unsigned long)pages_forwarded);
+    DSM_LOG_DEBUG("Client done: served=%lu written=%lu forwarded=%lu",
+                  (unsigned long)pages_served, (unsigned long)pages_written,
+                  (unsigned long)pages_forwarded);
     free(cta);
     return NULL;
 }
@@ -194,22 +207,32 @@ int main(int argc, char **argv)
         {0, 0, 0, 0}
     };
 
+    dsm_parse_set_usage(print_usage, argv[0]);
+
     int opt;
     while ((opt = getopt_long(argc, argv, "p:b:n:vhs:S:c:r:i:", long_opts, NULL)) != -1) {
         switch (opt) {
-        case 'p': cfg.port = (uint16_t)atoi(optarg); break;
+        case 'p': cfg.port = (uint16_t)dsm_parse_long(optarg, "-p/--port", 1, 65535); break;
         case 'b': cfg.bind_addr = optarg; break;
-        case 'n': cfg.num_virtual_pages = (uint16_t)atoi(optarg); break;
+        case 'n': cfg.num_virtual_pages = (uint32_t)dsm_parse_long(optarg, "-n/--pages", 1, (long)UINT32_MAX); break;
         case 'v': cfg.verbose = true; break;
         case 's': ccfg.seed_addr = optarg; break;
-        case 'S': ccfg.seed_port = (uint16_t)atoi(optarg); break;
-        case 'c': ccfg.cluster_port = (uint16_t)atoi(optarg); break;
-        case 'r': sscanf(optarg, "%u:%u", &ccfg.page_range_start, &ccfg.page_range_end); break;
+        case 'S': ccfg.seed_port = (uint16_t)dsm_parse_long(optarg, "-S/--seed-port", 1, 65535); break;
+        case 'c': ccfg.cluster_port = (uint16_t)dsm_parse_long(optarg, "-c/--cluster-port", 1, 65535); break;
+        case 'r':
+            if (sscanf(optarg, "%u:%u", &ccfg.page_range_start, &ccfg.page_range_end) != 2) {
+                DSM_LOG_ERROR("Invalid range: %s", optarg);
+                print_usage(argv[0]);
+                return 1;
+            }
+            break;
         case 'i': ccfg.node_id = optarg; break;
         case 'h': print_usage(argv[0]); return 0;
         default: print_usage(argv[0]); return 1;
         }
     }
+
+    dsm_log_verbose = cfg.verbose ? 1 : 0;
 
     struct sigaction sa = { .sa_handler = handle_signal };
     sigaction(SIGINT, &sa, NULL);
@@ -220,7 +243,7 @@ int main(int argc, char **argv)
     g_storage = mmap(NULL, storage_size, PROT_READ | PROT_WRITE,
                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, -1, 0);
     if (g_storage == MAP_FAILED) {
-        perror("mmap storage");
+        DSM_LOG_ERROR("mmap storage: %s", strerror(errno));
         return 1;
     }
     madvise(g_storage, storage_size, MADV_WILLNEED);
@@ -229,15 +252,17 @@ int main(int argc, char **argv)
         uint32_t local_addr = get_local_addr();
         g_cluster = cluster_create(&ccfg, local_addr, cfg.port);
         if (!g_cluster) {
-            fprintf(stderr, "Failed to create cluster context\n");
+            DSM_LOG_ERROR("Failed to create cluster context");
+            munmap(g_storage, storage_size);
             return 1;
         }
         if (cluster_start(g_cluster) < 0) {
-            fprintf(stderr, "Failed to start cluster\n");
+            DSM_LOG_ERROR("Failed to start cluster");
+            munmap(g_storage, storage_size);
             return 1;
         }
         if (ccfg.seed_addr && cluster_join(g_cluster) < 0) {
-            fprintf(stderr, "Warning: failed to join cluster via seed\n");
+            DSM_LOG_WARN("failed to join cluster via seed");
         }
         if (cfg.verbose) cluster_config_print(&ccfg);
     }
@@ -245,7 +270,20 @@ int main(int argc, char **argv)
     if (cfg.verbose) dsm_server_config_print(&cfg);
 
     int listen_fd = start_server(&cfg);
-    if (listen_fd < 0) return 1;
+    if (listen_fd < 0) {
+        munmap(g_storage, storage_size);
+        return 1;
+    }
+
+    size_t slot_cap = MAX_CLIENTS;
+    size_t slot_count = 0;
+    client_slot_t *slots = malloc(slot_cap * sizeof(*slots));
+    if (!slots) {
+        DSM_LOG_ERROR("malloc: %s", strerror(errno));
+        close(listen_fd);
+        munmap(g_storage, storage_size);
+        return 1;
+    }
 
     while (atomic_load(&running)) {
         struct sockaddr_in client_addr;
@@ -253,7 +291,7 @@ int main(int argc, char **argv)
         int client_fd = accept(listen_fd, (struct sockaddr *)&client_addr, &client_len);
         if (client_fd < 0) {
             if (errno == EINTR) continue;
-            perror("accept");
+            DSM_LOG_ERROR("accept: %s", strerror(errno));
             break;
         }
 
@@ -261,25 +299,63 @@ int main(int argc, char **argv)
 
         char client_ip[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, sizeof(client_ip));
-        if (cfg.verbose)
-            printf("Client from %s:%d\n", client_ip, ntohs(client_addr.sin_port));
+        DSM_LOG_DEBUG("Client from %s:%d", client_ip, ntohs(client_addr.sin_port));
 
         client_thread_arg_t *cta = malloc(sizeof(*cta));
+        if (!cta) {
+            DSM_LOG_ERROR("malloc: %s", strerror(errno));
+            close(client_fd);
+            continue;
+        }
         cta->fd = client_fd;
-        cta->cfg = cfg;
+
+        if (slot_count == slot_cap) {
+            /* Reap finished client threads to free slots. */
+            size_t kept = 0;
+            for (size_t i = 0; i < slot_count; i++) {
+                if (pthread_tryjoin_np(slots[i].tid, NULL) == 0)
+                    close(slots[i].fd);
+                else
+                    slots[kept++] = slots[i];
+            }
+            slot_count = kept;
+            if (slot_count == slot_cap) {
+                client_slot_t *grown = realloc(slots, 2 * slot_cap * sizeof(*slots));
+                if (!grown) {
+                    DSM_LOG_ERROR("realloc: %s", strerror(errno));
+                    close(client_fd);
+                    free(cta);
+                    continue;
+                }
+                slots = grown;
+                slot_cap *= 2;
+            }
+        }
 
         pthread_t tid;
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        pthread_create(&tid, &attr, handle_client_thread, cta);
-        pthread_attr_destroy(&attr);
+        int rc = pthread_create(&tid, NULL, handle_client_thread, cta);
+        if (rc != 0) {
+            DSM_LOG_ERROR("pthread_create: %s", strerror(rc));
+            close(client_fd);
+            free(cta);
+            continue;
+        }
+        slots[slot_count].tid = tid;
+        slots[slot_count].fd = client_fd;
+        slot_count++;
     }
 
     close(listen_fd);
+    for (size_t i = 0; i < slot_count; i++)
+        shutdown(slots[i].fd, SHUT_RDWR);
+    for (size_t i = 0; i < slot_count; i++) {
+        pthread_join(slots[i].tid, NULL);
+        close(slots[i].fd);
+    }
+    free(slots);
     if (g_cluster) cluster_destroy(g_cluster);
     munmap(g_storage, storage_size);
-    printf("Server shutdown\n");
+    DSM_LOG_INFO("Server shutdown");
     return 0;
 }
 

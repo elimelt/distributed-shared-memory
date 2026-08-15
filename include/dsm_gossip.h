@@ -9,11 +9,8 @@
 
 typedef enum {
     GOSSIP_PING = 1,
-    GOSSIP_PONG,
-    GOSSIP_JOIN,
-    GOSSIP_JOIN_ACK,
-    GOSSIP_SYNC,
-    GOSSIP_LEAVE
+    GOSSIP_PONG = 2,
+    GOSSIP_JOIN = 3
 } gossip_msg_type_t;
 
 typedef struct {
@@ -48,8 +45,6 @@ int gossip_send_ping(int fd, const cluster_node_t *self, const struct sockaddr_i
 int gossip_send_pong(int fd, const cluster_node_t *self, const struct sockaddr_in *dest,
                      const cluster_node_t *nodes, int node_count);
 int gossip_send_join(int fd, const cluster_node_t *self, const struct sockaddr_in *dest);
-int gossip_send_sync(int fd, const cluster_node_t *self, const struct sockaddr_in *dest,
-                     const cluster_node_t *nodes, int node_count);
 
 int gossip_parse(const void *buf, size_t len, gossip_msg_t *out);
 void gossip_node_to_cluster(const gossip_node_info_t *gn, cluster_node_t *cn);

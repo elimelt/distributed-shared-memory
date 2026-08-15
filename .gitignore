@@ -7,13 +7,7 @@ build/
 # Executables
 dsm-server
 dsm-client
-dsm-server-uring
 dsm
-
-# Example executables
-examples/matmul_bench
-examples/cluster_bench
-examples/matrix_demo
 
 # Profiling output
 *.out

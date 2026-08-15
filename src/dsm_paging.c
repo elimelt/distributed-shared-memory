@@ -6,93 +6,31 @@
 
 #include "dsm_paging.h"
 #include "dsm_protocol.h"
+#include "dsm_log.h"
 
 #define likely(x)   __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
 
-static void *frame_to_ptr(dsm_context_t *ctx, uint16_t frame)
+static void *frame_to_ptr(dsm_context_t *ctx, uint32_t frame)
 {
     return ctx->local_memory + ((size_t)frame * PAGE_SIZE);
 }
 
-static uint16_t get_free_frame(dsm_context_t *ctx)
+static uint32_t get_free_frame(dsm_context_t *ctx)
 {
     if (ctx->free_list_top > 0) {
-        ctx->free_frame_count--;
         return ctx->free_list[--ctx->free_list_top];
     }
-    return 0xFFFF;
+    return DSM_NO_FRAME;
 }
 
-static void push_free_frame(dsm_context_t *ctx, uint16_t frame)
+static void push_free_frame(dsm_context_t *ctx, uint32_t frame)
 {
     ctx->free_list[ctx->free_list_top++] = frame;
-    ctx->free_frame_count++;
 }
 
-static int rpc_fetch_page(dsm_context_t *restrict ctx, uint32_t page_id,
-                          void *restrict dest)
-{
-    dsm_rpc_header req __attribute__((aligned(8))) = {
-        .op = OP_GET_PAGE,
-        .pad = {0},
-        .page_id = page_id
-    };
-
-    if (unlikely(dsm_send_full(ctx->sock_fd, &req, sizeof(req)) < 0))
-        return -1;
-
-    if (unlikely(dsm_recv_full(ctx->sock_fd, dest, PAGE_SIZE) < 0))
-        return -1;
-
-    return 0;
-}
-
-static int rpc_fetch_pages_batch(dsm_context_t *ctx, uint32_t *page_ids,
-                                  void **dests, int count)
-{
-    if (count <= 0) return 0;
-
-    for (int i = 0; i < count; i++) {
-        dsm_rpc_header req = {
-            .op = OP_GET_PAGE,
-            .pad = {0},
-            .page_id = page_ids[i]
-        };
-        if (i < count - 1) {
-            if (dsm_send_more(ctx->sock_fd, &req, sizeof(req)) < 0)
-                return -1;
-        } else {
-            if (dsm_send_full(ctx->sock_fd, &req, sizeof(req)) < 0)
-                return -1;
-        }
-    }
-
-    for (int i = 0; i < count; i++) {
-        if (dsm_recv_full(ctx->sock_fd, dests[i], PAGE_SIZE) < 0)
-            return -1;
-    }
-
-    return 0;
-}
-
-static void rpc_writeback_page(dsm_context_t *ctx, uint32_t page_id, const void *src)
-{
-    dsm_rpc_header req = {
-        .op = OP_PUT_PAGE,
-        .pad = {0},
-        .page_id = page_id
-    };
-
-    struct iovec iov[2] = {
-        { .iov_base = &req, .iov_len = sizeof(req) },
-        { .iov_base = (void *)src, .iov_len = PAGE_SIZE }
-    };
-    dsm_sendv(ctx->sock_fd, iov, 2);
-}
-
-/* clock algorithm for page replacement */
-static uint16_t evict_page(dsm_context_t *ctx)
+/* clock algorithm for page replacement; returns DSM_NO_FRAME if writeback fails */
+static uint32_t evict_page(dsm_context_t *ctx)
 {
     for (;;) {
         frame_entry_t *frame = &ctx->frame_table[ctx->clock_hand];
@@ -103,11 +41,15 @@ static uint16_t evict_page(dsm_context_t *ctx)
             if (page->reference_bit) {
                 page->reference_bit = 0;
             } else {
-                uint16_t victim = ctx->clock_hand;
+                uint32_t victim = ctx->clock_hand;
 
                 if (page->dirty && page->location == LOC_REMOTE) {
                     void *data = frame_to_ptr(ctx, victim);
-                    rpc_writeback_page(ctx, frame->page_number, data);
+                    if (dsm_rpc_put(ctx->sock_fd, frame->page_number, data) < 0) {
+                        DSM_LOG_ERROR("writeback failed for page %u",
+                                      frame->page_number);
+                        return DSM_NO_FRAME;
+                    }
                 }
 
                 page->valid = 0;
@@ -125,33 +67,31 @@ static uint16_t evict_page(dsm_context_t *ctx)
     }
 }
 
-void dsm_init_paging_system(dsm_context_t *ctx)
+void dsm_context_set_socket(dsm_context_t *ctx, int fd)
 {
-    memset(ctx->page_table, 0, ctx->num_virtual_pages * sizeof(page_table_entry_t));
-    memset(ctx->frame_table, 0, ctx->num_pages * sizeof(frame_entry_t));
-
-    for (uint16_t i = 0; i < ctx->num_pages; i++)
-        ctx->free_list[i] = ctx->num_pages - 1 - i;
-    ctx->free_list_top = ctx->num_pages;
-    ctx->free_frame_count = ctx->num_pages;
-
-    ctx->clock_hand = 0;
-    ctx->last_page_id = 0xFFFFFFFF;
-    ctx->prefetch_count = 4;
-    ctx->local_hits = 0;
-    ctx->remote_fetches = 0;
-    ctx->evictions = 0;
+    ctx->sock_fd = fd;
 }
 
-void dsm_prefetch_pages(dsm_context_t *ctx, uint16_t start_page, uint8_t count)
+void dsm_context_get_stats(const dsm_context_t *ctx, uint64_t *hits,
+                           uint64_t *fetches, uint64_t *evictions)
 {
-    uint32_t page_ids[8];
-    void *dests[8];
-    uint16_t frames[8];
+    if (hits)
+        *hits = ctx->local_hits;
+    if (fetches)
+        *fetches = ctx->remote_fetches;
+    if (evictions)
+        *evictions = ctx->evictions;
+}
+
+void dsm_prefetch_pages(dsm_context_t *ctx, uint32_t start_page, uint8_t count)
+{
+    uint32_t page_ids[DSM_PREFETCH_MAX];
+    uint32_t frames[DSM_PREFETCH_MAX];
+    uint8_t bufs[DSM_PREFETCH_MAX * PAGE_SIZE];
     int batch_count = 0;
 
-    for (uint8_t i = 0; i < count && batch_count < 8; i++) {
-        uint16_t page_id = start_page + i;
+    for (uint8_t i = 0; i < count && batch_count < DSM_PREFETCH_MAX; i++) {
+        uint32_t page_id = start_page + i;
         if (page_id >= ctx->num_virtual_pages)
             break;
 
@@ -159,28 +99,29 @@ void dsm_prefetch_pages(dsm_context_t *ctx, uint16_t start_page, uint8_t count)
         if (entry->valid || entry->location != LOC_REMOTE)
             continue;
 
-        uint16_t frame = get_free_frame(ctx);
-        if (frame == 0xFFFF)
+        uint32_t frame = get_free_frame(ctx);
+        if (frame == DSM_NO_FRAME)
             break;
 
         page_ids[batch_count] = page_id;
         frames[batch_count] = frame;
-        dests[batch_count] = frame_to_ptr(ctx, frame);
         batch_count++;
     }
 
     if (batch_count == 0)
         return;
 
-    if (rpc_fetch_pages_batch(ctx, page_ids, dests, batch_count) < 0) {
+    if (dsm_rpc_get_batch(ctx->sock_fd, page_ids, batch_count, bufs) < 0) {
         for (int i = 0; i < batch_count; i++)
             push_free_frame(ctx, frames[i]);
         return;
     }
 
     for (int i = 0; i < batch_count; i++) {
-        uint16_t page_id = page_ids[i];
+        uint32_t page_id = page_ids[i];
         page_table_entry_t *entry = &ctx->page_table[page_id];
+
+        memcpy(frame_to_ptr(ctx, frames[i]), bufs + (size_t)i * PAGE_SIZE, PAGE_SIZE);
 
         entry->frame_number = frames[i];
         entry->valid = 1;
@@ -193,7 +134,7 @@ void dsm_prefetch_pages(dsm_context_t *ctx, uint16_t start_page, uint8_t count)
     }
 }
 
-void *dsm_access_page(dsm_context_t *ctx, uint16_t page_id, int write)
+void *dsm_access_page(dsm_context_t *ctx, uint32_t page_id, int write)
 {
     page_table_entry_t *entry = &ctx->page_table[page_id];
 
@@ -210,19 +151,22 @@ void *dsm_access_page(dsm_context_t *ctx, uint16_t page_id, int write)
 }
 
 __attribute__((noinline, cold))
-void *dsm_access_page_slow(dsm_context_t *ctx, uint16_t page_id, int write,
+void *dsm_access_page_slow(dsm_context_t *ctx, uint32_t page_id, int write,
                            page_table_entry_t *entry)
 {
-    uint16_t frame = get_free_frame(ctx);
-    if (unlikely(frame == 0xFFFF))
+    uint32_t frame = get_free_frame(ctx);
+    if (unlikely(frame == DSM_NO_FRAME)) {
         frame = evict_page(ctx);
+        if (unlikely(frame == DSM_NO_FRAME))
+            return NULL;
+    }
 
     void *frame_ptr = frame_to_ptr(ctx, frame);
 
     int should_fetch = (ctx->sock_fd >= 0);
     if (should_fetch) {
-        if (unlikely(rpc_fetch_page(ctx, page_id, frame_ptr) < 0)) {
-            fprintf(stderr, "RPC fetch failed for page %u\n", page_id);
+        if (unlikely(dsm_rpc_get(ctx->sock_fd, page_id, frame_ptr) < 0)) {
+            DSM_LOG_ERROR("RPC fetch failed for page %u", page_id);
             push_free_frame(ctx, frame);
             return NULL;
         }
@@ -246,7 +190,7 @@ void *dsm_access_page_slow(dsm_context_t *ctx, uint16_t page_id, int write,
     return frame_ptr;
 }
 
-dsm_context_t *dsm_create_context(uint16_t num_pages, uint16_t num_virtual_pages)
+dsm_context_t *dsm_create_context(uint32_t num_pages, uint32_t num_virtual_pages)
 {
     dsm_context_t *ctx = malloc(sizeof(dsm_context_t));
     if (!ctx)
@@ -262,7 +206,7 @@ dsm_context_t *dsm_create_context(uint16_t num_pages, uint16_t num_virtual_pages
 
     ctx->page_table = calloc(num_virtual_pages, sizeof(page_table_entry_t));
     ctx->frame_table = calloc(num_pages, sizeof(frame_entry_t));
-    ctx->free_list = malloc(num_pages * sizeof(uint16_t));
+    ctx->free_list = malloc(num_pages * sizeof(uint32_t));
 
     if (!ctx->page_table || !ctx->frame_table || !ctx->free_list) {
         munmap(ctx->local_memory, (size_t)num_pages * PAGE_SIZE);
@@ -273,7 +217,7 @@ dsm_context_t *dsm_create_context(uint16_t num_pages, uint16_t num_virtual_pages
         return NULL;
     }
 
-    for (uint16_t i = 0; i < num_pages; i++)
+    for (uint32_t i = 0; i < num_pages; i++)
         ctx->free_list[i] = num_pages - 1 - i;
     ctx->free_list_top = num_pages;
 
@@ -281,9 +225,8 @@ dsm_context_t *dsm_create_context(uint16_t num_pages, uint16_t num_virtual_pages
     ctx->num_virtual_pages = num_virtual_pages;
     ctx->sock_fd = -1;
     ctx->clock_hand = 0;
-    ctx->free_frame_count = num_pages;
     ctx->next_alloc_page = 0;
-    ctx->last_page_id = 0xFFFFFFFF;
+    ctx->last_page_id = DSM_NO_PAGE;
     ctx->prefetch_count = 4;
     ctx->local_hits = 0;
     ctx->remote_fetches = 0;

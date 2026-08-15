@@ -4,23 +4,26 @@ DSM (Distributed Shared Memory) Python Bindings
 Usage:
     import dsm
 
-    ctx = dsm.Context("localhost", 9999)
-    arr = dsm.Array(ctx, shape=(1000, 1000), dtype=dsm.float64)
-    arr[50, 100] = 3.14
-    print(arr[50, 100])
+    with dsm.Context("localhost", 9999,
+                     local_pages=256, virtual_pages=4096) as ctx:
+        arr = dsm.Array(ctx, shape=(1000, 1000), dtype=dsm.float64)
+        arr[50, 100] = 3.14
+        print(arr[50, 100])
 """
 
 import ctypes
-from ctypes import (c_void_p, c_uint16, c_uint32, c_size_t, c_int, c_double,
-                    c_int32, c_float, c_int64, c_uint8, c_uint64, POINTER)
+from ctypes import (c_void_p, c_uint32, c_int, c_double,
+                    c_int32, c_float, c_int64, c_uint8, c_uint64, POINTER,
+                    byref)
 import os
 import socket
-import struct
 from functools import reduce
 from operator import mul
 
-# Load the shared library
-_lib_path = os.path.join(os.path.dirname(__file__), '..', 'libdsm.so')
+# Load the shared library (DSM_LIB overrides the repo-relative default)
+_lib_path = os.environ.get(
+    'DSM_LIB',
+    os.path.join(os.path.dirname(__file__), '..', 'libdsm.so'))
 try:
     _lib = ctypes.CDLL(_lib_path)
 except OSError as e:
@@ -40,52 +43,32 @@ uint8 = 4
 
 # Map dtype to ctypes type and element size
 _dtype_map = {
-    int32: (c_int32, 4, 'i'),
-    int64: (c_int64, 8, 'q'),
-    float32: (c_float, 4, 'f'),
-    float64: (c_double, 8, 'd'),
-    uint8: (c_uint8, 1, 'B'),
+    int32: (c_int32, 4),
+    int64: (c_int64, 8),
+    float32: (c_float, 4),
+    float64: (c_double, 8),
+    uint8: (c_uint8, 1),
 }
 
 # Define function signatures for DSM library
-_lib.dsm_create_context.argtypes = [c_uint16, c_uint16]
+_lib.dsm_create_context.argtypes = [c_uint32, c_uint32]
 _lib.dsm_create_context.restype = c_void_p
 
 _lib.dsm_destroy_context.argtypes = [c_void_p]
 _lib.dsm_destroy_context.restype = None
 
-_lib.dsm_access_page.argtypes = [c_void_p, c_uint16, c_int]
+_lib.dsm_access_page.argtypes = [c_void_p, c_uint32, c_int]
 _lib.dsm_access_page.restype = c_void_p
 
-_lib.dsm_init_paging_system.argtypes = [c_void_p]
-_lib.dsm_init_paging_system.restype = None
-
-_lib.dsm_prefetch_pages.argtypes = [c_void_p, c_uint16, c_uint8]
+_lib.dsm_prefetch_pages.argtypes = [c_void_p, c_uint32, c_uint8]
 _lib.dsm_prefetch_pages.restype = None
 
+_lib.dsm_context_set_socket.argtypes = [c_void_p, c_int]
+_lib.dsm_context_set_socket.restype = None
 
-# Define the context structure for accessing stats
-class _DsmContext(ctypes.Structure):
-    """Mirror of dsm_context_t C struct for field access."""
-    _fields_ = [
-        ("sock_fd", c_int),
-        ("local_memory", c_void_p),
-        ("page_table", c_void_p),
-        ("frame_table", c_void_p),
-        ("free_list", c_void_p),
-        ("free_list_top", c_uint16),
-        ("clock_hand", c_uint16),
-        ("num_pages", c_uint16),
-        ("num_virtual_pages", c_uint16),
-        ("free_frame_count", c_uint16),
-        ("next_alloc_page", c_uint16),
-        ("last_page_id", c_uint32),
-        ("prefetch_count", c_uint8),
-        ("_pad2", c_uint8 * 7),
-        ("local_hits", c_uint64),
-        ("remote_fetches", c_uint64),
-        ("evictions", c_uint64),
-    ]
+_lib.dsm_context_get_stats.argtypes = [c_void_p, POINTER(c_uint64),
+                                       POINTER(c_uint64), POINTER(c_uint64)]
+_lib.dsm_context_get_stats.restype = None
 
 
 class Context:
@@ -102,8 +85,12 @@ class Context:
             local_pages: Number of local page frames (cache size)
             virtual_pages: Total virtual address space in pages
         """
-        self._ctx = _lib.dsm_create_context(local_pages, virtual_pages)
-        if not self._ctx:
+        self._ctx = None
+        self._sock = None
+        self._next_page = 0
+
+        ctx = _lib.dsm_create_context(local_pages, virtual_pages)
+        if not ctx:
             raise RuntimeError("Failed to create DSM context")
 
         self.host = host
@@ -112,19 +99,36 @@ class Context:
         self.virtual_pages = virtual_pages
 
         # Connect to server
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            self._sock.connect((host, port))
-            self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            # Store socket fd in context struct (offset of sock_fd is 0)
-            sock_fd = self._sock.fileno()
-            ctypes.cast(self._ctx, POINTER(c_int))[0] = sock_fd
+            sock.connect((host, port))
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         except socket.error as e:
-            _lib.dsm_destroy_context(self._ctx)
+            sock.close()
+            _lib.dsm_destroy_context(ctx)
             raise ConnectionError(f"Failed to connect to {host}:{port}: {e}")
+
+        _lib.dsm_context_set_socket(ctx, sock.fileno())
+        self._ctx = ctx
+        self._sock = sock
+
+    def _alloc_pages(self, count):
+        """Reserve count contiguous virtual pages; return the first page id."""
+        if self._ctx is None:
+            raise RuntimeError("Context is closed")
+        if self._next_page + count > self.virtual_pages:
+            raise MemoryError(
+                f"Cannot allocate {count} pages: "
+                f"{self.virtual_pages - self._next_page} of "
+                f"{self.virtual_pages} virtual pages remain")
+        base = self._next_page
+        self._next_page += count
+        return base
 
     def access_page(self, page_id, write=False):
         """Access a page, returning a pointer to its data."""
+        if self._ctx is None:
+            raise RuntimeError("Context is closed")
         ptr = _lib.dsm_access_page(self._ctx, page_id, int(write))
         if not ptr:
             raise RuntimeError(f"Failed to access page {page_id}")
@@ -132,26 +136,44 @@ class Context:
 
     def prefetch(self, start_page, count=4):
         """Prefetch pages starting from start_page."""
+        if self._ctx is None:
+            raise RuntimeError("Context is closed")
         _lib.dsm_prefetch_pages(self._ctx, start_page, count)
 
     @property
     def stats(self):
         """Return context statistics (local_hits, remote_fetches, evictions)."""
-        ctx_struct = ctypes.cast(self._ctx, POINTER(_DsmContext)).contents
+        if self._ctx is None:
+            raise RuntimeError("Context is closed")
+        hits = c_uint64()
+        fetches = c_uint64()
+        evictions = c_uint64()
+        _lib.dsm_context_get_stats(self._ctx, byref(hits), byref(fetches),
+                                   byref(evictions))
         return {
-            'local_hits': ctx_struct.local_hits,
-            'remote_fetches': ctx_struct.remote_fetches,
-            'evictions': ctx_struct.evictions,
+            'local_hits': hits.value,
+            'remote_fetches': fetches.value,
+            'evictions': evictions.value,
         }
 
-    def __del__(self):
-        if hasattr(self, '_sock') and self._sock:
-            try:
-                self._sock.close()
-            except Exception:
-                pass
-        if hasattr(self, '_ctx') and self._ctx:
+    def close(self):
+        """Release the context and close the server connection."""
+        if self._ctx is not None:
             _lib.dsm_destroy_context(self._ctx)
+            self._ctx = None
+        if self._sock is not None:
+            self._sock.close()
+            self._sock = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+        return False
+
+    def __del__(self):
+        self.close()
 
 
 class Array:
@@ -170,10 +192,13 @@ class Array:
         self.shape = tuple(shape)
         self.dtype = dtype
         self.ndim = len(shape)
-        self._ctype, self._elem_size, self._struct_fmt = _dtype_map[dtype]
+        self._ctype, self._elem_size = _dtype_map[dtype]
         self.size = reduce(mul, shape, 1)
         self._strides = self._compute_strides()
         self._elems_per_page = PAGE_SIZE // self._elem_size
+        num_pages = -(-(self.size * self._elem_size) // PAGE_SIZE)
+        self._num_pages = num_pages
+        self._base_page = ctx._alloc_pages(num_pages)
 
     def _compute_strides(self):
         """Compute row-major strides for the array."""
@@ -200,7 +225,7 @@ class Array:
         if not isinstance(indices, tuple):
             indices = (indices,)
         flat_idx = self._flat_index(indices)
-        page_id = flat_idx // self._elems_per_page
+        page_id = self._base_page + flat_idx // self._elems_per_page
         offset = (flat_idx % self._elems_per_page) * self._elem_size
         ptr = self.ctx.access_page(page_id, write=False)
         return ctypes.cast(ptr + offset, POINTER(self._ctype))[0]
@@ -210,7 +235,7 @@ class Array:
         if not isinstance(indices, tuple):
             indices = (indices,)
         flat_idx = self._flat_index(indices)
-        page_id = flat_idx // self._elems_per_page
+        page_id = self._base_page + flat_idx // self._elems_per_page
         offset = (flat_idx % self._elems_per_page) * self._elem_size
         ptr = self.ctx.access_page(page_id, write=True)
         ctypes.cast(ptr + offset, POINTER(self._ctype))[0] = value
