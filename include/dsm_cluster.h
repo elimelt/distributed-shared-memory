@@ -15,10 +15,9 @@
 #define GOSSIP_FANOUT          3
 
 typedef enum {
-    NODE_STATE_UNKNOWN = 0,
-    NODE_STATE_ALIVE,
-    NODE_STATE_SUSPECT,
-    NODE_STATE_DEAD
+    NODE_STATE_ALIVE = 1,
+    NODE_STATE_SUSPECT = 2,
+    NODE_STATE_DEAD = 3
 } node_state_t;
 
 typedef struct {
@@ -39,7 +38,6 @@ typedef struct {
     uint8_t        node_count;
     uint8_t        self_idx;
     uint8_t        pad[2];
-    uint32_t       total_pages;
     pthread_rwlock_t lock;
 } cluster_state_t;
 
@@ -68,15 +66,11 @@ int cluster_start(cluster_ctx_t *ctx);
 void cluster_stop(cluster_ctx_t *ctx);
 
 int cluster_join(cluster_ctx_t *ctx);
-uint8_t cluster_node_count(cluster_ctx_t *ctx);
 int cluster_get_owner(cluster_ctx_t *ctx, uint32_t page_id, cluster_node_t *out);
 bool cluster_is_local(cluster_ctx_t *ctx, uint32_t page_id);
 
 int cluster_forward_get(cluster_ctx_t *ctx, uint32_t page_id, void *buf);
 int cluster_forward_put(cluster_ctx_t *ctx, uint32_t page_id, const void *buf);
-
-void cluster_get_self(cluster_ctx_t *ctx, cluster_node_t *out);
-int cluster_get_nodes(cluster_ctx_t *ctx, cluster_node_t *out, int max_nodes);
 
 #endif
 

@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
@@ -22,7 +23,7 @@ struct cluster_ctx {
     cluster_node_t   self;
 
     int              udp_fd;
-    volatile int     running;
+    atomic_int       running;
 
     pthread_t        gossip_thread;
     pthread_t        heartbeat_thread;
@@ -33,9 +34,9 @@ struct cluster_ctx {
 static uint64_t
 now_ms(void)
 {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (uint64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
 }
 
 static void
@@ -43,14 +44,20 @@ generate_node_id(uint8_t *id)
 {
     int fd = open("/dev/urandom", O_RDONLY);
     if (fd >= 0) {
-        read(fd, id, NODE_ID_LEN);
+        ssize_t n = read(fd, id, NODE_ID_LEN);
         close(fd);
-    } else {
-        uint64_t t = now_ms();
-        memcpy(id, &t, sizeof(t));
-        for (int i = 8; i < NODE_ID_LEN; i++)
-            id[i] = (uint8_t)(rand() & 0xFF);
+        if (n == NODE_ID_LEN)
+            return;
     }
+
+    /* Fallback: seed with nanosecond wall-clock time, then fill with rand(). */
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    srand((unsigned)((uint64_t)ts.tv_sec ^ (uint64_t)ts.tv_nsec));
+    uint64_t t = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+    memcpy(id, &t, sizeof(t));
+    for (int i = 8; i < NODE_ID_LEN; i++)
+        id[i] = (uint8_t)(rand() & 0xFF);
 }
 
 static int
@@ -142,8 +149,12 @@ cluster_create(const cluster_config_t *cfg, uint32_t local_addr, uint16_t client
     if (!ctx) return NULL;
 
     ctx->cfg = *cfg;
-    pthread_rwlock_init(&ctx->state.lock, NULL);
+    if (pthread_rwlock_init(&ctx->state.lock, NULL) != 0) {
+        free(ctx);
+        return NULL;
+    }
 
+    ctx->udp_fd = -1;
     for (int i = 0; i < CLUSTER_MAX_NODES; i++)
         ctx->peer_fds[i] = -1;
 
@@ -302,8 +313,19 @@ cluster_start(cluster_ctx_t *ctx)
     }
 
     ctx->running = 1;
-    pthread_create(&ctx->gossip_thread, NULL, gossip_loop, ctx);
-    pthread_create(&ctx->heartbeat_thread, NULL, heartbeat_loop, ctx);
+    if (pthread_create(&ctx->gossip_thread, NULL, gossip_loop, ctx) != 0) {
+        ctx->running = 0;
+        close(ctx->udp_fd);
+        ctx->udp_fd = -1;
+        return -1;
+    }
+    if (pthread_create(&ctx->heartbeat_thread, NULL, heartbeat_loop, ctx) != 0) {
+        ctx->running = 0;
+        pthread_join(ctx->gossip_thread, NULL);
+        close(ctx->udp_fd);
+        ctx->udp_fd = -1;
+        return -1;
+    }
     return 0;
 }
 
@@ -333,19 +355,17 @@ cluster_join(cluster_ctx_t *ctx)
     gossip_send_join(ctx->udp_fd, &ctx->self, seed);
     freeaddrinfo(res);
 
-    for (int i = 0; i < 10 && ctx->state.node_count <= 1; i++)
+    uint8_t count = 0;
+    for (int i = 0; i < 10; i++) {
+        pthread_rwlock_rdlock(&ctx->state.lock);
+        count = ctx->state.node_count;
+        pthread_rwlock_unlock(&ctx->state.lock);
+        if (count > 1)
+            break;
         usleep(100000);
+    }
 
-    return (ctx->state.node_count > 1) ? 0 : -1;
-}
-
-uint8_t
-cluster_node_count(cluster_ctx_t *ctx)
-{
-    pthread_rwlock_rdlock(&ctx->state.lock);
-    uint8_t count = ctx->state.node_count;
-    pthread_rwlock_unlock(&ctx->state.lock);
-    return count;
+    return (count > 1) ? 0 : -1;
 }
 
 int
@@ -368,23 +388,10 @@ cluster_get_owner(cluster_ctx_t *ctx, uint32_t page_id, cluster_node_t *out)
 bool
 cluster_is_local(cluster_ctx_t *ctx, uint32_t page_id)
 {
-    return page_id >= ctx->self.range_start && page_id < ctx->self.range_end;
-}
-
-void
-cluster_get_self(cluster_ctx_t *ctx, cluster_node_t *out)
-{
-    *out = ctx->self;
-}
-
-int
-cluster_get_nodes(cluster_ctx_t *ctx, cluster_node_t *out, int max_nodes)
-{
     pthread_rwlock_rdlock(&ctx->state.lock);
-    int count = (ctx->state.node_count < max_nodes) ? ctx->state.node_count : max_nodes;
-    memcpy(out, ctx->state.nodes, count * sizeof(cluster_node_t));
+    bool local = page_id >= ctx->self.range_start && page_id < ctx->self.range_end;
     pthread_rwlock_unlock(&ctx->state.lock);
-    return count;
+    return local;
 }
 
 static int

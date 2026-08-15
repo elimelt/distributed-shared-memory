@@ -24,6 +24,8 @@ CLUSTER_OBJ := $(BUILDDIR)/dsm_cluster.o $(BUILDDIR)/dsm_gossip.o
 # Unit test sources
 TEST_SRC := tests/unit_paging.c
 TEST_BIN := $(BUILDDIR)/unit_paging
+GOSSIP_TEST_SRC := tests/unit_gossip.c
+GOSSIP_TEST_BIN := $(BUILDDIR)/unit_gossip
 
 # Targets
 SERVER   := dsm-server
@@ -137,8 +139,13 @@ test: $(SERVER) $(CLIENT)
 $(TEST_BIN): $(TEST_SRC) $(COMMON_OBJ) $(INCDIR)/dsm_paging.h | $(BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ $(TEST_SRC) $(COMMON_OBJ) $(LDFLAGS)
 
-unit: $(TEST_BIN)
+# Unit tests: gossip message encode/parse
+$(GOSSIP_TEST_BIN): $(GOSSIP_TEST_SRC) $(BUILDDIR)/dsm_gossip.o $(INCDIR)/dsm_gossip.h $(INCDIR)/dsm_cluster.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ $(GOSSIP_TEST_SRC) $(BUILDDIR)/dsm_gossip.o $(LDFLAGS)
+
+unit: $(TEST_BIN) $(GOSSIP_TEST_BIN)
 	@./$(TEST_BIN)
+	@./$(GOSSIP_TEST_BIN)
 
 # Cluster test: 2-node cluster (30s timeout per client)
 cluster-test: $(SERVER) $(CLIENT)

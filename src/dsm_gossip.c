@@ -4,14 +4,13 @@
 #include <errno.h>
 
 #include "dsm_gossip.h"
-#include "dsm_protocol.h"
 
 static int
 send_msg(int fd, const gossip_msg_t *msg, const struct sockaddr_in *dest)
 {
-    size_t len = sizeof(gossip_header_t) + 
+    size_t len = sizeof(gossip_header_t) +
                  msg->hdr.node_count * sizeof(gossip_node_info_t);
-    
+
     ssize_t n = sendto(fd, msg, len, 0,
                        (const struct sockaddr *)dest, sizeof(*dest));
     return (n == (ssize_t)len) ? 0 : -1;
@@ -73,13 +72,13 @@ gossip_send_pong(int fd, const cluster_node_t *self, const struct sockaddr_in *d
 {
     gossip_msg_t msg;
     fill_header(&msg, GOSSIP_PONG, self);
-    
+
     int count = (node_count > GOSSIP_MSG_MAX_NODES) ? GOSSIP_MSG_MAX_NODES : node_count;
     msg.hdr.node_count = (uint8_t)count;
-    
+
     for (int i = 0; i < count; i++)
         cluster_node_to_gossip(&nodes[i], &msg.nodes[i]);
-    
+
     return send_msg(fd, &msg, dest);
 }
 
@@ -94,42 +93,28 @@ gossip_send_join(int fd, const cluster_node_t *self, const struct sockaddr_in *d
 }
 
 int
-gossip_send_sync(int fd, const cluster_node_t *self, const struct sockaddr_in *dest,
-                 const cluster_node_t *nodes, int node_count)
-{
-    gossip_msg_t msg;
-    fill_header(&msg, GOSSIP_SYNC, self);
-    
-    int count = (node_count > GOSSIP_MSG_MAX_NODES) ? GOSSIP_MSG_MAX_NODES : node_count;
-    msg.hdr.node_count = (uint8_t)count;
-    
-    for (int i = 0; i < count; i++)
-        cluster_node_to_gossip(&nodes[i], &msg.nodes[i]);
-    
-    return send_msg(fd, &msg, dest);
-}
-
-int
 gossip_parse(const void *buf, size_t len, gossip_msg_t *out)
 {
     if (len < sizeof(gossip_header_t))
         return -1;
-    
+
     memcpy(&out->hdr, buf, sizeof(gossip_header_t));
-    
+
     if (out->hdr.magic != GOSSIP_MAGIC)
         return -1;
-    
-    size_t expected = sizeof(gossip_header_t) + 
+
+    if (out->hdr.node_count > GOSSIP_MSG_MAX_NODES)
+        return -1;
+
+    size_t expected = sizeof(gossip_header_t) +
                       out->hdr.node_count * sizeof(gossip_node_info_t);
     if (len < expected)
         return -1;
-    
+
     if (out->hdr.node_count > 0) {
         memcpy(out->nodes, (const uint8_t *)buf + sizeof(gossip_header_t),
                out->hdr.node_count * sizeof(gossip_node_info_t));
     }
-    
+
     return 0;
 }
-
